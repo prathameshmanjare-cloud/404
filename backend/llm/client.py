@@ -18,7 +18,7 @@ from llm.backends import GroqBackend, RecordBackend, ReplayBackend
 from llm.errors import CassetteMissing, ModelError, ModelUnavailable
 from llm.reliability import BREAKERS, backoff_delay, chaos_check
 
-log = logging.getLogger("codeforge.llm")
+log = logging.getLogger("codesmith.llm")
 
 _override = None
 _override_lock = threading.Lock()

@@ -26,12 +26,12 @@ from report import render_report
 from runs import RUNS, idempotency_key
 from sandbox import run_in_sandbox, run_js_tests
 from sql_guard import check_sql
-from state import CodeForgeState, PolicyResult, Requirements, Triage
+from state import CodeSmithState, PolicyResult, Requirements, Triage
 from templates.tasks import TEMPLATES, match_template
 from tickets import build_ticket
 from triage import triage_request
 
-log = logging.getLogger("codeforge.graph")
+log = logging.getLogger("codesmith.graph")
 CHECK_WORDS = re.compile(r"\b(valid|invalid|correct|wrong|right|check|verify|genuine|real|fake|format)\b", re.I)
 TIER_RANK = {"primary": 0, "fallback": 1, "template": 2, "none": 3}
 
@@ -40,14 +40,14 @@ def worse(a: str, b: str) -> str:
     return a if TIER_RANK.get(a, 0) >= TIER_RANK.get(b, 0) else b
 
 
-def _ticket(state: CodeForgeState, reason: str, triage: Triage | None = None) -> dict:
+def _ticket(state: CodeSmithState, reason: str, triage: Triage | None = None) -> dict:
     cfg = get_config()
     return build_ticket(state["user_id"], state["request"], reason, triage, state.get("controls", {}),
                         cfg["tickets"]["sla_hours"]).model_dump()
 
 
 # ---------------------------------------------------------------- nodes
-def triage_node(state: CodeForgeState) -> dict:
+def triage_node(state: CodeSmithState) -> dict:
     cfg = get_config()
     tri, tier = triage_request(state["request"], state.get("controls", {}))
     session = RUNS.session(state["user_id"])
@@ -62,7 +62,7 @@ def triage_node(state: CodeForgeState) -> dict:
     return out
 
 
-def route_node(state: CodeForgeState) -> dict:
+def route_node(state: CodeSmithState) -> dict:
     try:
         route, tier = agents.route_request(state["request"], state.get("controls", {}))
         if route == "other" and state.get("pii") and CHECK_WORDS.search(state["request"]):
@@ -76,7 +76,7 @@ def route_node(state: CodeForgeState) -> dict:
                 "tier": "template", "language": "python"}
 
 
-def requirements_node(state: CodeForgeState) -> dict:
+def requirements_node(state: CodeSmithState) -> dict:
     if state.get("tier") == "template":
         return {}
     try:
@@ -88,7 +88,7 @@ def requirements_node(state: CodeForgeState) -> dict:
         return {"tier": "template"}
 
 
-def code_node(state: CodeForgeState) -> dict:
+def code_node(state: CodeSmithState) -> dict:
     if state.get("tier") != "template":
         try:
             controls = state.get("controls", {})
@@ -112,7 +112,7 @@ def code_node(state: CodeForgeState) -> dict:
             "notes": state.get("notes", []) + [f"template: {name}"]}
 
 
-def policy_node(state: CodeForgeState) -> dict:
+def policy_node(state: CodeSmithState) -> dict:
     evaluate = evaluate_js_policy if state.get("language") == "javascript" else evaluate_code_policy
     code_p = evaluate(state["code"])
     tests_p = evaluate(state["tests"])
@@ -140,14 +140,14 @@ def policy_node(state: CodeForgeState) -> dict:
     return out
 
 
-def approval_node(state: CodeForgeState) -> dict:
+def approval_node(state: CodeSmithState) -> dict:
     answer = interrupt({"code": state["code"], "tests": state["tests"], "policy": state["policy"]})
     approved = answer.get("decision") == "approve"
     return {"approval": "approved" if approved else "rejected", "approver": answer.get("approver"),
             "status": "running" if approved else "rejected"}
 
 
-def run_node(state: CodeForgeState) -> dict:
+def run_node(state: CodeSmithState) -> dict:
     cfg = get_config()["sandbox"]
     key = idempotency_key(state["user_id"], state["code"], state["tests"])
     cached = RUNS.result_for(key)
@@ -160,7 +160,7 @@ def run_node(state: CodeForgeState) -> dict:
     return {"idem_key": key, "run": run, "status": "done"}
 
 
-def repair_node(state: CodeForgeState) -> dict:
+def repair_node(state: CodeSmithState) -> dict:
     session = RUNS.session(state["user_id"])
     session.failed_repairs += 1
     req = Requirements.model_validate(state["requirements"])
@@ -173,7 +173,7 @@ def repair_node(state: CodeForgeState) -> dict:
     return {"code": code, "attempts": state.get("attempts", 0) + 1, "tier": worse(state.get("tier", "primary"), tier)}
 
 
-def sql_node(state: CodeForgeState) -> dict:
+def sql_node(state: CodeSmithState) -> dict:
     try:
         sql, tier = agents.write_sql(state["request"], state.get("controls", {}))
     except ModelUnavailable:
@@ -182,13 +182,13 @@ def sql_node(state: CodeForgeState) -> dict:
     return {"sql": sql, "policy": check_sql(sql).model_dump(), "status": "sql", "tier": tier}
 
 
-def refuse_node(state: CodeForgeState) -> dict:
+def refuse_node(state: CodeSmithState) -> dict:
     return {"status": "refused", "notes": state.get("notes", []) + [
         "I can't help with that request. If it was about another user's data or a different role: you can "
         "only see your own requests, and who you are comes from your sign-in, not from the message."]}
 
 
-def general_node(state: CodeForgeState) -> dict:
+def general_node(state: CodeSmithState) -> dict:
     """Non-coding requests: a text answer. The model sees masked text and code-verified PII facts only."""
     try:
         answer, tier = agents.answer_general(state["request"], state.get("pii") or [], state.get("controls", {}))
@@ -198,7 +198,7 @@ def general_node(state: CodeForgeState) -> dict:
     return {"status": "answered", "answer": answer, "tier": tier}
 
 
-def _offline_answer(state: CodeForgeState) -> str | None:
+def _offline_answer(state: CodeSmithState) -> str | None:
     """With no model, the code-verified checks can still answer "is my <ID> valid?"."""
     found = state.get("pii") or []
     if not found:
@@ -208,12 +208,12 @@ def _offline_answer(state: CodeForgeState) -> str | None:
     return "\n".join(lines)
 
 
-def unavailable_node(state: CodeForgeState) -> dict:
+def unavailable_node(state: CodeSmithState) -> dict:
     return {"status": "unavailable", "tier": "none", "answer": _offline_answer(state),
             "ticket": _ticket(state, "models unavailable and no template for this task")}
 
 
-def escalation_after_run(state: CodeForgeState) -> dict:
+def escalation_after_run(state: CodeSmithState) -> dict:
     """After the last failed repair, open a ticket if the session rules say so."""
     run = state.get("run") or {}
     session = RUNS.session(state["user_id"])
@@ -230,35 +230,35 @@ def escalation_after_run(state: CodeForgeState) -> dict:
     return {"ticket": _ticket(state, reason, tri)}
 
 
-def report_node(state: CodeForgeState) -> dict:
+def report_node(state: CodeSmithState) -> dict:
     status = state.get("status") or "done"
     return {"status": status, "report": render_report({**state, "status": status})}
 
 
 # ---------------------------------------------------------------- edges
-def after_triage(state: CodeForgeState) -> str:
+def after_triage(state: CodeSmithState) -> str:
     return "report" if state.get("status") == "escalated" else "route"
 
 
-def after_route(state: CodeForgeState) -> str:
+def after_route(state: CodeSmithState) -> str:
     return {"python_function": "requirements", "javascript_function": "requirements", "sql": "sql",
             "general": "general", "other": "refuse"}.get(state.get("route"), "unavailable")
 
 
-def after_code(state: CodeForgeState) -> str:
+def after_code(state: CodeSmithState) -> str:
     return "report" if state.get("status") in {"unavailable", "invalid_output"} else "policy"
 
 
-def after_policy(state: CodeForgeState) -> str:
+def after_policy(state: CodeSmithState) -> str:
     decision = (state.get("policy") or {}).get("decision")
     return {"deny": "report", "needs_approval": "approval"}.get(decision, "run")
 
 
-def after_approval(state: CodeForgeState) -> str:
+def after_approval(state: CodeSmithState) -> str:
     return "run" if state.get("approval") == "approved" else "report"
 
 
-def after_run(state: CodeForgeState) -> str:
+def after_run(state: CodeSmithState) -> str:
     run = state.get("run") or {}
     limit = get_config()["escalation"]["max_failed_repairs"]
     if run.get("exit_code") == 0 or run.get("timed_out") or state.get("tier") == "template":
@@ -269,7 +269,7 @@ def after_run(state: CodeForgeState) -> str:
 
 
 def build_graph():
-    g = StateGraph(CodeForgeState)
+    g = StateGraph(CodeSmithState)
     for name, fn in [("triage", triage_node), ("route", route_node), ("requirements", requirements_node),
                      ("code", code_node), ("policy", policy_node), ("approval", approval_node),
                      ("run", run_node), ("repair", repair_node), ("post_run", escalation_after_run),

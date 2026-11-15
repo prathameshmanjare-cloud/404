@@ -1,4 +1,5 @@
 import type { Controls, Health, User } from "../types";
+import Logo from "./Logo";
 
 export type Page = "assistant" | "quality";
 
@@ -28,9 +29,11 @@ export default function Header({ page, onPage, users, userId, onUser, health, co
   return (
     <header className="header">
       <div className="brand">
-        <span className="logo" aria-hidden>{"</>"}</span>
+        <Logo size={38} />
         <div>
-          <div className="brand-name">CodeForge</div>
+          <div className="brand-name">
+            CodeSmith <span className="brand-by">by 404</span>
+          </div>
           <div className="brand-sub">Python &amp; JavaScript assistant with privacy and safety checks</div>
         </div>
       </div>

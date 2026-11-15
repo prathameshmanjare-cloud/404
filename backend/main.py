@@ -27,7 +27,7 @@ from sandbox import isolation_layers
 import service
 
 service.setup_logging()
-log = logging.getLogger("codeforge.main")
+log = logging.getLogger("codesmith.main")
 STARTUP: dict = {"models_checked": False, "missing_models": []}
 
 
@@ -37,7 +37,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="CodeForge", lifespan=lifespan)
+app = FastAPI(title="CodeSmith by 404", lifespan=lifespan)
 # Only the local frontend may call the API (any localhost port, so a busy 5173 is not a blocker).
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Session-Token"])

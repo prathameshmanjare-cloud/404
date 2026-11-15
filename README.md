@@ -1,4 +1,4 @@
-# CodeForge (team 404)
+# CodeSmith by 404
 
 An assistant for **Python and JavaScript code, SQL queries and general questions**, built on LangGraph with
 Groq models, a FastAPI backend and a React frontend. Personal data (PAN, Aadhaar, card numbers and more) is
@@ -44,7 +44,7 @@ a ticket. It never auto-approves code.
 
 * **History comes from the backend, per user.** `GET /runs` returns only the caller's runs, and switching
   "Signed in as" reloads the list. An admin sees every run, because admins review and approve code.
-* **History is saved in SQLite** (`backend/data/codeforge.db`, gitignored), so it survives backend restarts.
+* **History is saved in SQLite** (`backend/data/codesmith.db`, gitignored), so it survives backend restarts.
   It stores only masked text. Delete the file to start fresh. Tests and the gate use an in-memory database
   and never touch it.
 * **Each user keeps only their last 3 requests** (`history.max_per_user` in `config.yaml`). When a 4th

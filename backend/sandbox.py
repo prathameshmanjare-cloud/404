@@ -120,7 +120,7 @@ def _execute(files: dict[str, str], launcher: str, timeout_s: float, max_output:
     command(workdir) returns the argv; the default runs the Python launcher.
     """
     EXECUTIONS.bump()
-    workdir = os.path.realpath(tempfile.mkdtemp(prefix="codeforge-run-"))
+    workdir = os.path.realpath(tempfile.mkdtemp(prefix="codesmith-run-"))
     try:
         for name, content in {**files, "_launcher.py" if command is None else "_unused": launcher}.items():
             if name == "_unused":
@@ -262,7 +262,7 @@ def js_syntax_error(src: str) -> str | None:
     """`node --check` on the source; returns the first error line, or None when it parses."""
     if not NODE_BIN:
         return None
-    workdir = tempfile.mkdtemp(prefix="codeforge-check-")
+    workdir = tempfile.mkdtemp(prefix="codesmith-check-")
     try:
         path = os.path.join(workdir, "check.js")
         with open(path, "w", encoding="utf-8") as fh:

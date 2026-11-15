@@ -20,7 +20,7 @@ from runs import RUNS, NotFound
 from sandbox import run_js_snippet, run_snippet
 from state import Controls, PolicyResult
 
-log = logging.getLogger("codeforge.service")
+log = logging.getLogger("codesmith.service")
 
 
 def setup_logging(level: int = logging.INFO) -> None:

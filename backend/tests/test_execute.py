@@ -105,7 +105,7 @@ def test_example_uses_values_not_parameter_names():
 
 def test_errors_are_readable():
     out = run_snippet("def f(n: int) -> int:\n    return n + 1\n", "f('x')").output
-    assert "codeforge-run-" not in out and "runpy" not in out and "_launcher" not in out
+    assert "codesmith-run-" not in out and "runpy" not in out and "_launcher" not in out
     assert 'File "solution.py"' in out and "TypeError" in out
 
 

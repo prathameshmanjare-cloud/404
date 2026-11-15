@@ -9,7 +9,7 @@ from guard.mask import mask
 from llm.errors import ModelUnavailable
 from state import Ticket, Triage
 
-log = logging.getLogger("codeforge.tickets")
+log = logging.getLogger("codesmith.tickets")
 
 
 def priority_for(triage: Triage | None, reason: str) -> str:

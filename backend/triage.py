@@ -11,7 +11,7 @@ from agents.agents import triage as model_triage
 from llm.errors import ModelUnavailable
 from state import Triage
 
-log = logging.getLogger("codeforge.triage")
+log = logging.getLogger("codesmith.triage")
 
 HUMAN_RE = re.compile(
     r"\b(get|give|want|need|talk to|speak to|connect me (to|with)|let me talk to)\b[^.!?]{0,20}"

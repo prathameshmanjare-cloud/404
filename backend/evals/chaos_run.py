@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import os  # noqa: E402
-os.environ.setdefault("CODEFORGE_DB", ":memory:")   # chaos requests don't fill real history
+os.environ.setdefault("CODESMITH_DB", ":memory:")   # chaos requests don't fill real history
 
 import service  # noqa: E402
 from evals.run_gate import stub_for  # noqa: E402

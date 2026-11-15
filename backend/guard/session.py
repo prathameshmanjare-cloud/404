@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from guard.identity import Identity, UnknownUser, get_identity
 
-_current: contextvars.ContextVar[Identity | None] = contextvars.ContextVar("codeforge_identity", default=None)
+_current: contextvars.ContextVar[Identity | None] = contextvars.ContextVar("codesmith_identity", default=None)
 
 
 class NotSignedIn(Exception):

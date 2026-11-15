@@ -54,12 +54,12 @@ class Session:
 
 
 def _db_path() -> str:
-    """CODEFORGE_DB overrides the file (tests and the gate use ":memory:" so they never touch real history)."""
-    path = os.getenv("CODEFORGE_DB")
+    """CODESMITH_DB overrides the file (tests and the gate use ":memory:" so they never touch real history)."""
+    path = os.getenv("CODESMITH_DB")
     if path:
         return path
     from config import BACKEND_DIR, get_config
-    rel = get_config().get("storage", {}).get("db_path", "data/codeforge.db")
+    rel = get_config().get("storage", {}).get("db_path", "data/codesmith.db")
     full = (BACKEND_DIR / rel).resolve()
     full.parent.mkdir(parents=True, exist_ok=True)
     return str(full)

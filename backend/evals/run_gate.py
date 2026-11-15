@@ -22,7 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-os.environ["CODEFORGE_DB"] = ":memory:"   # the gate never touches the real history file
+os.environ["CODESMITH_DB"] = ":memory:"   # the gate never touches the real history file
 
 import service  # noqa: E402
 from config import get_config  # noqa: E402

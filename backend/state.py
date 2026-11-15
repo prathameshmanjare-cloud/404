@@ -62,7 +62,7 @@ class Ticket(BaseModel):
     request: str  # masked
 
 
-class CodeForgeState(TypedDict, total=False):
+class CodeSmithState(TypedDict, total=False):
     thread_id: str
     user_id: str                       # from config, never from the message
     role: Literal["user", "admin"]
