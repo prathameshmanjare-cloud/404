@@ -26,5 +26,5 @@ def check_sql(sql: str) -> PolicyResult:
         return PolicyResult(decision="deny", reasons=["only SELECT queries are allowed"])
     bad = sorted({m.group(1).upper() for m in WRITE_WORDS.finditer(body)})
     if bad:
-        return PolicyResult(decision="deny", reasons=[f"write or admin keyword: {', '.join(bad)}"])
+        return PolicyResult(decision="deny", reasons=[f"write or instructor keyword: {', '.join(bad)}"])
     return PolicyResult(decision="allow", reasons=["single read-only SELECT"])

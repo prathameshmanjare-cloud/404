@@ -5,20 +5,16 @@ interface Props {
   history: HistoryEntry[];
   selected: string | null;
   onSelect: (threadId: string) => void;
-  isAdmin?: boolean;
 }
 
-export default function HistoryList({ history, selected, onSelect, isAdmin }: Props) {
+export default function HistoryList({ history, selected, onSelect }: Props) {
   return (
     <section className="card history" aria-label="Request history">
       <h2 className="card-title">
-        {isAdmin ? "All users' history" : "Your history"}{" "}
-        <span className="count">{isAdmin ? history.length : `${history.length} / 3`}</span>
+        Your history <span className="count">{`${history.length} / 3`}</span>
       </h2>
       <p className="muted small history-note">
-        {isAdmin
-          ? "Each user's last 3 requests, so admins can review and approve code."
-          : "Your last 3 requests. Older ones are deleted automatically, and only you can see these."}
+        Your last 3 requests. Older ones are deleted automatically, and only you can see these.
       </p>
       {history.length === 0 ? (
         <p className="muted small">Your requests will appear here.</p>
@@ -36,7 +32,7 @@ export default function HistoryList({ history, selected, onSelect, isAdmin }: Pr
                   <span className="history-meta">
                     <span className={`badge ${s.tone}`}>{s.label}</span>
                     <span className="muted small">
-                      {h.userId} · {new Date(h.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {new Date(h.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </span>
                   </span>
                 </button>

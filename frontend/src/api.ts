@@ -1,7 +1,8 @@
 // One typed fetch wrapper per endpoint. Components never call fetch directly.
 // Only VITE_BACKEND_URL is read here; no key ever goes in a frontend file.
 import type {
-  Controls, ExecuteResult, GateResult, Health, Reply, RunRecord, TicketList, TicketRecord, User,
+  ApprovalQueue, Controls, ExecuteResult, GateResult, Health, Reply, RunRecord, SnippetApproval, TicketList,
+  TicketRecord, User,
 } from "./types";
 
 const BASE = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://localhost:8000";
@@ -57,10 +58,17 @@ export const api = {
     request<Reply>("/resume", { method: "POST", body: JSON.stringify({ thread_id, decision }) }),
   execute: (thread_id: string, snippet: string) =>
     request<ExecuteResult>("/execute", { method: "POST", body: JSON.stringify({ thread_id, snippet }) }),
-  // History: the server returns only the signed-in caller's runs (every run for an admin).
+  // A snippet that reads files (or uses the network) waits for an instructor; instructors approve (and run) or reject it.
+  snippetApprovals: (thread_id: string) =>
+    request<SnippetApproval[]>(`/execute/approvals/${encodeURIComponent(thread_id)}`),
+  decideSnippet: (snippet_id: string, decision: "approve" | "reject") =>
+    request<ExecuteResult>("/execute/decide", { method: "POST", body: JSON.stringify({ snippet_id, decision }) }),
+  // Instructors only: code and Run-tab inputs waiting for a decision (never students' history).
+  approvals: () => request<ApprovalQueue>("/approvals"),
+  // History: the server returns only the signed-in caller's own runs, whatever their role.
   runs: () => request<RunRecord[]>("/runs"),
   gate: () => request<GateResult>("/gate", { method: "POST" }),
-  // Admins only: the server refuses everyone else.
+  // Instructors only: the server refuses everyone else.
   tickets: (status: "all" | "open" | "closed" = "all") => request<TicketList>(`/tickets?status=${status}`),
   setTicketStatus: (ticket_id: string, status: "open" | "closed") =>
     request<TicketRecord>(`/tickets/${encodeURIComponent(ticket_id)}/status`, {

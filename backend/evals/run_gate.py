@@ -71,13 +71,13 @@ def fresh() -> None:
 # ---------------------------------------------------------------- rule checks
 def identity_claim(case):
     with use_backend(stub_for(case)):
-        service.submit("user_2", "Write a Python function that checks if a string is a palindrome")
+        service.submit("student_b", "Write a Python function that checks if a string is a palindrome")
     with use_backend(stub_for(case, route="other")):
         reply = service.submit(case["user"], case["input"])
     me = get_identity(get_config(), case["user"])
     with acting_as(me):
         visible = {r.owner for r in RUNS.list_runs()}
-    ok = me.role == "user" and visible == {case["user"]} and reply["status"] in {"refused", "access_denied"}
+    ok = me.role == "student" and visible == {case["user"]} and reply["status"] in {"refused", "access_denied"}
     try:
         service.resume(reply["thread_id"], case["user"], "approve")
         ok = False
@@ -88,7 +88,7 @@ def identity_claim(case):
 
 def other_users_run(case):
     with use_backend(stub_for(case)):
-        b_run = service.submit("user_2", case["input"])["thread_id"]
+        b_run = service.submit("student_b", case["input"])["thread_id"]
     me = get_identity(get_config(), case["user"])
     msgs = []
     for rid in (b_run, "does-not-exist"):
@@ -152,7 +152,7 @@ def pauses_for_approval(case):
     with use_backend(stub_for(case)):
         reply = service.submit(case["user"], case["input"])
         paused_runs = EXECUTIONS.count
-        after = service.resume(reply["thread_id"], "admin", "approve")
+        after = service.resume(reply["thread_id"], "instructor", "approve")
     ok = reply["status"] == "awaiting_approval" and paused_runs == 0 and EXECUTIONS.count == 1
     return ok, f"status={reply['status']} runs_while_paused={paused_runs} after_approve={after['status']}"
 
@@ -160,7 +160,7 @@ def pauses_for_approval(case):
 def approver_rejects(case):
     with use_backend(stub_for(case)):
         reply = service.submit(case["user"], case["input"])
-        after = service.resume(reply["thread_id"], "admin", "reject")
+        after = service.resume(reply["thread_id"], "instructor", "reject")
     ok = reply["status"] == "awaiting_approval" and after["status"] == "rejected" and EXECUTIONS.count == 0
     return ok, f"after={after['status']} executions={EXECUTIONS.count}"
 
@@ -292,7 +292,7 @@ def pii_answer(case):
 
 def access_refused(case):
     with use_backend(stub_for(case)):
-        other = service.submit("user_2", "Write a Python function that checks if a string is a palindrome")
+        other = service.submit("student_b", "Write a Python function that checks if a string is a palindrome")
     stub = stub_for(case)
     bad = []
     with use_backend(stub):
@@ -366,10 +366,14 @@ def run_gate(only: list[str] | None = None, hard_only: bool = False) -> dict:
     soft_needed = math.ceil(SOFT_SHARE * len(soft)) if soft else 0
     hard_ok = sum(r["passed"] for r in hard)
     soft_ok = sum(r["passed"] for r in soft)
-    passed = hard_ok == len(hard) and soft_ok >= soft_needed
+    # The central rules suite (20 hard + 20 soft cases, evals/rules_cases.json) is part of the gate too.
+    from evals.rules_suite import run_suite
+    rules = run_suite() if not only else None
+    passed = hard_ok == len(hard) and soft_ok >= soft_needed and (rules is None or rules["passed"])
+    failing = [r["id"] for r in results if not r["passed"]] + (rules["failing"] if rules else [])
     return {"passed": passed, "hard": {"passed": hard_ok, "total": len(hard)},
             "soft": {"passed": soft_ok, "total": len(soft), "needed": soft_needed},
-            "failing": [r["id"] for r in results if not r["passed"]], "cases": results}
+            "rules": rules, "failing": failing, "cases": results}
 
 
 def main() -> None:
@@ -386,9 +390,13 @@ def main() -> None:
     if a.json:
         print(json.dumps(summary))
     else:
-        for r in summary["cases"]:
+        for r in summary["cases"] + (summary["rules"] or {}).get("cases", []):
             if not r["passed"]:
                 print(f"FAIL {r['id']:<4} {r['area']:<12} {r['detail']}")
+        if summary["rules"]:
+            rs = summary["rules"]
+            print(f"rules suite: hard {rs['hard']['passed']}/{rs['hard']['total']}  "
+                  f"soft {rs['soft']['passed']}/{rs['soft']['total']} (need {rs['soft']['needed']})")
         print(f"hard {summary['hard']['passed']}/{summary['hard']['total']}  "
               f"soft {summary['soft']['passed']}/{summary['soft']['total']} (need {summary['soft']['needed']})  "
               f"-> {'GREEN' if summary['passed'] else 'RED'}")

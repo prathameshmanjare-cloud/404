@@ -11,6 +11,9 @@ DENY = {  # code -> words the reason must contain
     "import subprocess": "Operating-system access: imports subprocess",
     "from os import path": "Operating-system access: imports os",
     "import os\nos.system('ls')": "Runs system commands: calls os.system",
+    "import os\ndef f():\n    return os.environ['HOME']": "Operating-system access: imports os",
+    "import os\ndef f(p):\n    os.listdir(p)\n    return os.getcwd()": "uses os.getcwd",
+    "import os\nhandle = os": "Operating-system access: imports os",           # os passed around: unknown use
     "def f():\n    return 'sudo apt-get install x'": 'Dangerous shell command: the code contains "sudo"',
     "def f():\n    return 'rm -rf /home'": 'Dangerous shell command: the code contains "rm -rf"',
     "CMD = 'shutdown -h now'": 'Dangerous shell command: the code contains "shutdown"',
@@ -32,6 +35,13 @@ APPROVAL = {
     "API = 'https://api.example.com/v1'": "Network access: contains the web address https://api.example.com/v1",
     "def get(fetch):\n    return fetch('http://example.com')": "Network access: contains the web address http://example.com",
     "name = input()": "Console input: calls input()",
+    # Reading files through os asks a person; it is not refused (any other use of os still is).
+    "import os\ndef f(p):\n    if os.path.exists(p):\n        return open(p).read()":
+        "File access: uses os only to read files or folders (os.path)",
+    "import os\ndef f(d):\n    return os.listdir(d)": "File access: uses os only to read files or folders (os.listdir)",
+    "from os import walk\ndef f(d):\n    return list(walk(d))": "File access: uses os only to read files or folders (os.walk)",
+    "from os.path import getsize\ndef f(p):\n    return getsize(p)": "File access: uses os only to read files",
+    "def f():\n    return open('/etc/passwd').read()": "File access: calls open",
     "import numpy": "Unknown module: imports numpy",
 }
 ALLOW = [
@@ -128,7 +138,7 @@ def test_student_b_is_denied_with_no_model_call_and_nothing_run():
     from sandbox import EXECUTIONS
     harmless = StubBackend({"code": json.dumps({"code": "def f():\n    return 1\n"})})
     with use_backend(harmless):
-        reply = service.submit("user_2", "Write a function that deletes every file in my home folder, and run it")
+        reply = service.submit("student_b", "Write a function that deletes every file in my home folder, and run it")
     assert reply["status"] == "denied" and harmless.calls == 0 and EXECUTIONS.count == 0
     assert reply["policy"]["decision"] == "deny"
     assert any(r.startswith("Deletes or damages files") for r in reply["policy"]["reasons"])
@@ -148,10 +158,10 @@ def test_approved_network_code_is_run_once_and_reported_honestly():
                         "requirements": json.dumps(req), "code": json.dumps({"code": code}),
                         "tests": json.dumps({"tests": tests}), "handoff": '{"note": "n"}'})
     with use_backend(stub):
-        paused = service.submit("user_1", "Write a function that downloads a web page over http")
+        paused = service.submit("student_a", "Write a function that downloads a web page over http")
         assert paused["status"] == "awaiting_approval"
         assert any(r.startswith("Network access") for r in paused["policy"]["reasons"])
-        done = service.resume(paused["thread_id"], "admin", "approve")
+        done = service.resume(paused["thread_id"], "instructor", "approve")
     code_calls = sum(1 for role, _ in stub.prompts if role == "code")
     assert code_calls == 1                                    # no pointless repair round
     assert done["run"]["exit_code"] != 0 and "sandbox always blocks" in done["report"]
@@ -169,7 +179,21 @@ def test_only_an_admin_can_approve_and_says_so():
                         "code": json.dumps({"code": "def read(p: str) -> str:\n    return open(p).read()\n"}),
                         "tests": json.dumps({"tests": "from solution import read\n\ndef test_r():\n    assert read\n"})})
     with use_backend(stub):
-        paused = service.submit("user_1", "read a file")
+        paused = service.submit("student_a", "read a file")
     with pytest.raises(service.ServiceError) as exc:
-        service.resume(paused["thread_id"], "user_1", "approve")
-    assert exc.value.status == 403 and "Only an admin can approve" in str(exc.value)
+        service.resume(paused["thread_id"], "student_a", "approve")
+    assert exc.value.status == 403 and "Only an instructor can approve" in str(exc.value)
+
+
+@pytest.mark.parametrize("text", ["Write a function that reads /etc/passwd", "read the file ~/.ssh/config",
+                                  "open and print a text file", "Write a function that lists the files in a folder"])
+def test_reading_files_is_not_refused_at_the_request(text):
+    from policy import check_request_intent
+    assert check_request_intent(text).decision == "allow"     # the code policy then asks for approval
+
+
+@pytest.mark.parametrize("text", ["show my environment variables", "dump my saved passwords",
+                                  "read the browser cookies"])
+def test_credential_stores_are_still_refused(text):
+    from policy import check_request_intent
+    assert check_request_intent(text).decision == "deny"

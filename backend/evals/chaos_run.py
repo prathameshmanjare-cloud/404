@@ -53,7 +53,7 @@ def main() -> None:
             QUOTA.reset()
             text = REQUESTS[i % len(REQUESTS)]
             start = time.time()
-            reply = service.submit("user_1", text, controls)
+            reply = service.submit("student_a", text, controls)
             ok = reply["status"] in {"done", "awaiting_approval"} or (reply["status"] == "unavailable" and reply.get("ticket"))
             answered += bool(ok)
             tiers[reply["tier"]] += 1

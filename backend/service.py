@@ -1,7 +1,9 @@
 """submit() and resume(): what the HTTP API and the CLI both call."""
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
 import time
 import uuid
 
@@ -10,13 +12,14 @@ from langgraph.types import Command
 from config import get_config
 from examples import example_call
 from graph import GRAPH
-from guard.access import check_access_request, refusal, refusal_message
+from guard.access import refusal, refusal_message
 from guard.identity import UnknownUser, can_approve, get_identity
 from guard.mask import MaskingFilter, find_pii, mask, mask_obj
 from guard.quota import QUOTA, check_quota
 from guard.session import acting_as
 from escalation import should_escalate
-from policy import advice_for, check_request_intent, evaluate_code_policy
+from policy import advice_for, evaluate_code_policy
+from rules import check_prompt, full_report
 from tickets import TICKETS, TicketNotFound, build_ticket
 from policy_js import evaluate_js_policy
 from runs import RUNS, NotFound, request_key
@@ -55,7 +58,7 @@ def quota_message(cfg: dict, identity) -> dict:
         "reason": (f"You have used all {limit} runs allowed for a {identity.role} account "
                    f"({identity.name}, {identity.user_id}). The limit is set per user in config.yaml and "
                    f"checked in code, so it can't be changed from a message."),
-        "allowed": "Your earlier requests and answers are still under Your history. Ask an admin to raise the limit.",
+        "allowed": "Your earlier requests and answers are still under Your history. Ask an instructor to raise the limit.",
         "assurance": "Nothing was sent to the AI model and nothing was run.",
     }
 
@@ -146,14 +149,15 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
         "run": {k: run.get(k) for k in ("exit_code", "timed_out", "output", "sandbox", "cached")} if run else None,
     }
     out["blocked_before_generation"] = bool(state.get("blocked_before_generation"))
+    out["rules"] = full_report(state.get("rules"), {**state, "code": out["code"]})   # prompt + code rules
     out["run_key"] = (state.get("idem_key") or "")[:12] or None     # hash of user + code + tests (R2)
     out["advice"] = advice_for((out.get("policy") or {}).get("reasons", [])) if status == "denied" else []
     if out.get("ticket"):
-        TICKETS.save(mask_obj(out["ticket"]), thread_id)     # every ticket is kept for the admin's Tickets page
+        TICKETS.save(mask_obj(out["ticket"]), thread_id)     # every ticket is kept for the instructor's Tickets page
     # Final pass: nothing unmasked leaves the backend, even text a model echoed back.
     for key in ("report", "ticket", "triage", "answer"):
         out[key] = mask_obj(out[key])
-    RUNS.update(thread_id, status, out)  # the owner (and admins) can reload it; nobody else
+    RUNS.update(thread_id, status, out)  # the owner (and instructors) can reload it; nobody else
     return out
 
 
@@ -181,21 +185,27 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
     log.info("submit user=%s request=%s", user_id, request[:200])
 
     thread_id = uuid.uuid4().hex
-    # Rule in code, before any model call: no identity claims, no reaching into other users' data.
-    denial = check_access_request(request, identity, cfg)
+    # Every prompt passes through the central rules (rules.py) before any model call. A failed HARD rule
+    # refuses the request here; SOFT rules only score it and are shown with the reply.
+    checked = check_prompt(request, pii, identity, cfg)
+    prompt_rules = checked.to_dict()
+    denial = checked.access
     if denial:
         log.warning("access refused user=%s reason=%s", identity.user_id, denial)
         RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
         return _reply(thread_id, {"status": "access_denied", "tier": "none", "request": request, "pii": pii,
-                                  "denial": refusal(identity, denial),
+                                  "denial": refusal(identity, denial), "rules": prompt_rules,
                                   "report": refusal_message(identity, denial)}, False)
-    # Rule in code, before any model call: a request whose goal is destructive is denied outright.
-    intent = check_request_intent(request)
+    intent = checked.intent
+    other = [r for r in checked.hard_failures if not intent or r.detail not in intent.reasons]
+    if intent.decision != "deny" and other:          # e.g. the prompt is too long
+        intent = PolicyResult(decision="deny", reasons=[f"{r.name}: {r.detail}" for r in other])
     if intent.decision == "deny":
         log.warning("request denied by policy user=%s reasons=%s", identity.user_id, intent.reasons)
         RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"],
                     req_key=request_key(identity.user_id, request, ctl))
-        return _reply(thread_id, _denied_request(cfg, identity, request, pii, intent), False)
+        return _reply(thread_id, {**_denied_request(cfg, identity, request, pii, intent), "rules": prompt_rules},
+                      False)
     # Request-level idempotency: the same request again returns the earlier result. Nothing is generated or
     # run twice and no second ticket is opened. Chaos/outage demos always run fresh.
     req_key = request_key(identity.user_id, request, ctl)
@@ -210,11 +220,11 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
         RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
         limit = quota_message(cfg, identity)
         return _reply(thread_id, {"status": "quota_exceeded", "tier": "none", "request": request, "pii": pii,
-                                  "denial": limit, "report": f"{limit['title']}.\n{limit['reason']}"}, False)
+                                  "denial": limit, "rules": prompt_rules, "report": f"{limit['title']}.\n{limit['reason']}"}, False)
     RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"], req_key=req_key)
     state = {"thread_id": thread_id, "user_id": identity.user_id, "role": identity.role, "request": request,
              "controls": ctl, "attempts": 0, "tier": "none", "notes": [], "status": "started", "pii": pii,
-             "language": "python"}
+             "language": "python", "rules": prompt_rules}
     return _run_graph(state, thread_id)
 
 
@@ -227,7 +237,7 @@ def resume(thread_id: str, user_id: str, decision: str) -> dict:
     if decision not in {"approve", "reject"}:
         raise ServiceError("decision must be approve or reject")
     if not can_approve(cfg, approver):
-        raise ServiceError(f"Only an admin can approve or reject code. You are signed in as {approver.name} "
+        raise ServiceError(f"Only an instructor can approve or reject code. You are signed in as {approver.name} "
                            f"({approver.user_id}), a {approver.role} account.", 403)
     snapshot = GRAPH.get_state({"configurable": {"thread_id": thread_id}})
     if not snapshot or not snapshot.next or "approval" not in snapshot.next:
@@ -240,12 +250,168 @@ def resume(thread_id: str, user_id: str, decision: str) -> dict:
 MAX_SNIPPET_CHARS = 5000
 
 
+class SnippetApprovals:
+    """Run-tab snippets that need a person (file access, network, ...): pending until an instructor decides.
+
+    An approval covers that exact snippet on that thread only (matched by its hash); editing the snippet
+    asks again. The raw snippet stays in memory only so the approved run can use it; everything shown or
+    logged is masked. Like paused graph runs, a backend restart forgets pending snippets.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, dict] = {}
+
+    @staticmethod
+    def key(thread_id: str, snippet: str) -> str:
+        return hashlib.sha256(f"{thread_id}\0{snippet}".encode()).hexdigest()[:16]
+
+    def get(self, snippet_id: str) -> dict | None:
+        with self._lock:
+            return self._items.get(snippet_id)
+
+    def request(self, thread_id: str, snippet: str, requester: str, reasons: list[str]) -> dict:
+        sid = self.key(thread_id, snippet)
+        with self._lock:
+            item = self._items.get(sid)
+            if item is None or item["status"] == "rejected":
+                item = {"snippet_id": sid, "thread_id": thread_id, "snippet": snippet, "requested_by": requester,
+                        "reasons": reasons, "status": "pending", "decided_by": None, "created": time.time()}
+                self._items[sid] = item
+            return item
+
+    def decide(self, snippet_id: str, status: str, approver: str) -> dict:
+        with self._lock:
+            item = self._items[snippet_id]
+            item.update(status=status, decided_by=approver, decided=time.time())
+            return item
+
+    def pending(self) -> list[dict]:
+        with self._lock:
+            return sorted((i for i in self._items.values() if i["status"] == "pending"), key=lambda i: i["created"])
+
+    def for_thread(self, thread_id: str) -> list[dict]:
+        with self._lock:
+            return sorted((i for i in self._items.values() if i["thread_id"] == thread_id),
+                          key=lambda i: i["created"], reverse=True)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
+SNIPPETS = SnippetApprovals()
+
+
+def _snippet_view(item: dict) -> dict:
+    """What the UI may see of a snippet approval: masked text, never the raw snippet."""
+    return {k: (mask(v) if k == "snippet" else v) for k, v in item.items()}
+
+
+def _runnable(thread_id: str, caller, review: bool = False) -> tuple[str, str]:
+    """The thread's code and language, if the caller may run it: its owner, or an approver deciding on a
+    snippet (review=True). The code itself must have passed the policy gate or been approved."""
+    try:
+        if review:
+            RUNS.get_for_review(thread_id)
+        else:
+            with acting_as(caller):
+                RUNS.get_run(thread_id)
+    except NotFound as exc:
+        raise ServiceError(str(exc), 404) from exc
+    values = GRAPH.get_state({"configurable": {"thread_id": thread_id}}).values or {}
+    code = values.get("code")
+    if not code:
+        raise ServiceError("this request produced no Python code to run", 400)
+    decision = (values.get("policy") or {}).get("decision")
+    if decision == "deny":
+        raise ServiceError("the policy gate denied this code, so it cannot be run", 403)
+    if decision == "needs_approval" and values.get("approval") != "approved":
+        raise ServiceError("this code needs an approver before it can run", 403)
+    return code, values.get("language", "python")
+
+
+def _sandbox_run(cfg, quota_user, thread_id: str, code: str, language: str, snippet: str,
+                 snippet_policy: PolicyResult, approval: dict | None = None) -> dict:
+    if not check_quota(cfg, quota_user):
+        limit = quota_message(cfg, quota_user)
+        raise ServiceError(limit["title"] + ". " + limit["reason"], 429)
+    sb = cfg["sandbox"]
+    log.info("execute thread=%s user=%s snippet=%s", thread_id, quota_user.user_id, snippet[:200])
+    runner = run_js_snippet if language == "javascript" else run_snippet
+    result = runner(code, snippet, sb["timeout_s"], sb["max_output_chars"])
+    return {"thread_id": thread_id, "status": "ran", "exit_code": result.exit_code, "timed_out": result.timed_out,
+            "output": mask(result.output), "sandbox": result.sandbox, "policy": snippet_policy.model_dump(),
+            "approval": _snippet_view(approval) if approval else None}
+
+
 def execute(thread_id: str, user_id: str, snippet: str) -> dict:
     """Run a thread's generated code with the caller's snippet in the sandbox and return the output.
 
-    Allowed only for the thread's owner (or an admin), only when the code passed the policy gate or
-    was approved, and only when the snippet itself passes the policy gate. Each run counts toward quota.
+    Allowed only for the thread's owner, only when the code passed the policy gate or
+    was approved. The snippet goes through the policy gate too: denied snippets are refused, and snippets
+    that need a person (reading a file, network, ...) wait for an instructor's approval instead of running.
+    Each run counts toward quota.
     """
+    cfg = get_config()
+    try:
+        caller = get_identity(cfg, user_id)
+    except UnknownUser as exc:
+        raise ServiceError(str(exc), 403) from exc
+    snippet = snippet or ""
+    if len(snippet) > MAX_SNIPPET_CHARS:
+        raise ServiceError(f"snippet is longer than {MAX_SNIPPET_CHARS} characters")
+    code, language = _runnable(thread_id, caller)
+
+    evaluate = evaluate_js_policy if language == "javascript" else evaluate_code_policy
+    snippet_policy = evaluate(snippet) if snippet.strip() else PolicyResult(
+        decision="allow", reasons=["no snippet: the code runs as a script"])
+    if snippet_policy.decision == "deny":
+        raise ServiceError("the snippet was refused by the policy gate: " + "; ".join(snippet_policy.reasons), 403)
+    approval = None
+    if snippet_policy.decision == "needs_approval":
+        approval = SNIPPETS.get(SNIPPETS.key(thread_id, snippet))
+        if not approval or approval["status"] != "approved":
+            item = SNIPPETS.request(thread_id, snippet, caller.user_id, snippet_policy.reasons)
+            log.info("snippet needs approval thread=%s user=%s snippet_id=%s", thread_id, user_id,
+                     item["snippet_id"])
+            return {"thread_id": thread_id, "status": "needs_approval", "policy": snippet_policy.model_dump(),
+                    "approval": _snippet_view(item), "exit_code": None, "timed_out": False, "output": "",
+                    "sandbox": ""}
+    return _sandbox_run(cfg, caller, thread_id, code, language, snippet, snippet_policy, approval)
+
+
+def decide_snippet(snippet_id: str, user_id: str, decision: str) -> dict:
+    """An instructor approves (and runs) or rejects a Run-tab snippet that was waiting for approval."""
+    cfg = get_config()
+    try:
+        approver = get_identity(cfg, user_id)
+    except UnknownUser as exc:
+        raise ServiceError(str(exc), 403) from exc
+    if decision not in {"approve", "reject"}:
+        raise ServiceError("decision must be approve or reject")
+    _require_admin(approver, "approve or reject code")
+    item = SNIPPETS.get(snippet_id)
+    if not item:
+        raise ServiceError("unknown snippet or nothing waiting for approval (a restart forgets pending "
+                           "snippets; press Run again)", 404)
+    code, language = _runnable(item["thread_id"], approver, review=True)
+    log.info("snippet decision snippet_id=%s approver=%s decision=%s", snippet_id, user_id, decision)
+    if decision == "reject":
+        item = SNIPPETS.decide(snippet_id, "rejected", approver.user_id)
+        return {"thread_id": item["thread_id"], "status": "rejected", "approval": _snippet_view(item),
+                "exit_code": None, "timed_out": False, "output": "", "sandbox": ""}
+    item = SNIPPETS.decide(snippet_id, "approved", approver.user_id)
+    evaluate = evaluate_js_policy if language == "javascript" else evaluate_code_policy
+    policy = evaluate(item["snippet"])
+    if policy.decision == "deny":   # cannot happen for a stored snippet, but deny always wins
+        raise ServiceError("the snippet was refused by the policy gate: " + "; ".join(policy.reasons), 403)
+    requester = get_identity(cfg, item["requested_by"])      # the run counts toward the requester's quota
+    return _sandbox_run(cfg, requester, item["thread_id"], code, language, item["snippet"], policy, item)
+
+
+def snippet_approvals(thread_id: str, user_id: str) -> list[dict]:
+    """Snippet approvals of one thread, for its owner only (masked). Instructors use approval_queue()."""
     cfg = get_config()
     try:
         caller = get_identity(cfg, user_id)
@@ -256,41 +422,40 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
             RUNS.get_run(thread_id)
     except NotFound as exc:
         raise ServiceError(str(exc), 404) from exc
-    snippet = snippet or ""
-    if len(snippet) > MAX_SNIPPET_CHARS:
-        raise ServiceError(f"snippet is longer than {MAX_SNIPPET_CHARS} characters")
-
-    values = GRAPH.get_state({"configurable": {"thread_id": thread_id}}).values or {}
-    code = values.get("code")
-    if not code:
-        raise ServiceError("this request produced no Python code to run", 400)
-    decision = (values.get("policy") or {}).get("decision")
-    if decision == "deny":
-        raise ServiceError("the policy gate denied this code, so it cannot be run", 403)
-    if decision == "needs_approval" and values.get("approval") != "approved":
-        raise ServiceError("this code needs an approver before it can run", 403)
-
-    language = values.get("language", "python")
-    evaluate = evaluate_js_policy if language == "javascript" else evaluate_code_policy
-    snippet_policy = evaluate(snippet) if snippet.strip() else PolicyResult(
-        decision="allow", reasons=["no snippet: the code runs as a script"])
-    if snippet_policy.decision != "allow":
-        raise ServiceError("the snippet was refused by the policy gate: " + "; ".join(snippet_policy.reasons), 403)
-    if not check_quota(cfg, caller):
-        raise ServiceError(quota_message(cfg, caller)["title"] + ". " + quota_message(cfg, caller)["reason"], 429)
-
-    sb = cfg["sandbox"]
-    log.info("execute thread=%s user=%s snippet=%s", thread_id, user_id, snippet[:200])
-    runner = run_js_snippet if language == "javascript" else run_snippet
-    result = runner(code, snippet, sb["timeout_s"], sb["max_output_chars"])
-    return {"thread_id": thread_id, "exit_code": result.exit_code, "timed_out": result.timed_out,
-            "output": mask(result.output), "sandbox": result.sandbox, "policy": snippet_policy.model_dump()}
+    return [_snippet_view(i) for i in SNIPPETS.for_thread(thread_id)]
 
 
-# ---------------------------------------------------------------- tickets (admins only)
+def approval_queue(user_id: str) -> dict:
+    """Instructors only: what is waiting for a decision right now, and nothing else.
+
+    Code paused for approval (with its masked request, code and policy reasons, so it can be reviewed) and
+    Run-tab snippets waiting for approval. Once decided, an item leaves the queue: instructors never see
+    students' history, finished runs or answers.
+    """
+    cfg = get_config()
+    try:
+        caller = get_identity(cfg, user_id)
+    except UnknownUser as exc:
+        raise ServiceError(str(exc), 403) from exc
+    _require_admin(caller, "see the approval queue")
+    names = {uid: u.get("name", uid) for uid, u in cfg["users"].items()}
+    code = [{"run_id": r.run_id, "owner": r.owner, "owner_name": names.get(r.owner, r.owner), "created": r.created,
+             "reply": _remask(r.result)} for r in RUNS.awaiting_approval() if r.result]
+    snippets = []
+    for item in SNIPPETS.pending():
+        try:
+            run = RUNS.get_for_review(item["thread_id"])
+        except NotFound:
+            continue
+        snippets.append({**_snippet_view(item), "owner_name": names.get(run.owner, run.owner),
+                         "request": mask(run.request), "language": (run.result or {}).get("language")})
+    return {"code": code, "snippets": snippets}
+
+
+# ---------------------------------------------------------------- tickets (instructors only)
 def _require_admin(identity, what: str) -> None:
     if not can_approve(get_config(), identity):
-        raise ServiceError(f"Only an admin can {what}. You are signed in as {identity.name} ({identity.user_id}), "
+        raise ServiceError(f"Only an instructor can {what}. You are signed in as {identity.name} ({identity.user_id}), "
                            f"a {identity.role} account.", 403)
 
 

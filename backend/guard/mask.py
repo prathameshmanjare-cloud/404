@@ -157,6 +157,20 @@ def _check_aadhaar(value: str, text: str, start: int):
                    "a real Aadhaar")
 
 
+_AADHAAR_WORDS = re.compile(r"\b(?:a{1,2}dh?a{1,2}r|uid|uidai)\b", re.I)
+_PAN_WORDS = re.compile(r"\b(?:pan|permanent\s+account\s+(?:number|no))\b", re.I)
+
+
+def _keyword_before(words: re.Pattern, detail: str, span: int = 40) -> Check:
+    """Mask a value that does not match the strict format when the user named its kind right before it
+    ("my aadhaar 1234 5678 9012", "pan no ABCD1234F"). A typo'd ID is still personal data."""
+    def check(value: str, text: str, start: int):
+        if words.search(text[max(0, start - span):start]):
+            return False, detail
+        return None
+    return check
+
+
 RULES: tuple[RedactionRule, ...] = (
     RedactionRule(
         "SECRET",
@@ -262,6 +276,22 @@ RULES: tuple[RedactionRule, ...] = (
         # Aadhaar: 12 digits, first digit 2-9, usually written 4-4-4 (masked even if the checksum fails)
         re.compile(DIGITS(12, 12, first="[2-9]")),
         "Aadhaar numbers", _check_aadhaar),
+    RedactionRule(
+        "AADHAAR",
+        # Any 8-16 digit run right after the word "aadhaar"/"aadhar"/"uid", even one starting 0/1 or with a
+        # digit missing: the user said it is their Aadhaar, so it is masked (and reported invalid)
+        re.compile(DIGITS(8, 16)),
+        "Aadhaar numbers named by keyword but not in the valid format",
+        _keyword_before(_AADHAAR_WORDS, "the Aadhaar number is invalid: a real Aadhaar has 12 digits, the first "
+                                        "one 2-9, and passes the Verhoeff checksum")),
+    RedactionRule(
+        "PAN",
+        # A PAN-like code right after the word "PAN" that is not the exact 5-4-1 shape:
+        # ABCD1234F, ABCPE 1234 F, ABCPE12345F
+        re.compile(r"(?<![\w-])[A-Z]{3,6}[ -]?\d{3,5}[ -]?[A-Z]{0,2}(?![\w-])", re.I),
+        "PAN-like codes named by keyword but not in the valid format",
+        _keyword_before(_PAN_WORDS, "the PAN is invalid: a real PAN is 5 letters, 4 digits and 1 letter "
+                                    "(the 4th letter is the holder type)")),
     RedactionRule(
         "PHONE",
         # Indian mobile: 10 digits starting 6-9, e.g. 98765 43210

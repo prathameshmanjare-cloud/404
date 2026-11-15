@@ -15,7 +15,7 @@ log = logging.getLogger("codesmith.triage")
 
 HUMAN_RE = re.compile(
     r"\b(get|give|want|need|talk to|speak to|connect me (to|with)|let me talk to)\b[^.!?]{0,20}"
-    r"\b(a |an |the |some )?(human|person|real person|agent|someone|staff|support|admin)\b"
+    r"\b(a |an |the |some )?(human|person|real person|agent|someone|staff|support|instructor)\b"
     r"|\bhuman please\b|\bescalate\b",
     re.I,
 )

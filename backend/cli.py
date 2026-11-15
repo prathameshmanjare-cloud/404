@@ -1,10 +1,10 @@
 """Console runner for the same service functions the API uses.
 
-  python cli.py --user user_1 "Write a Python function that checks if a string is a palindrome"
-  python cli.py --user user_1 --chaos "Write a palindrome checker"
+  python cli.py --user student_a "Write a Python function that checks if a string is a palindrome"
+  python cli.py --user student_a --chaos "Write a palindrome checker"
 Paused runs live in this process's memory, so approval is asked for right here:
-  python cli.py --user user_1 "Write a function that reads a text file and counts its lines"
-  -> awaiting_approval, then: approver user id? admin   decision? approve
+  python cli.py --user student_a "Write a function that reads a text file and counts its lines"
+  -> awaiting_approval, then: approver user id? instructor   decision? approve
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def show(reply: dict) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("text", nargs="?")
-    p.add_argument("--user", default="user_1")
+    p.add_argument("--user", default="student_a")
     p.add_argument("--chaos", action="store_true")
     p.add_argument("--outage", action="store_true")
     p.add_argument("--replay", action="store_true")
@@ -41,7 +41,7 @@ def main() -> None:
         reply = service.submit(a.user, a.text, {"chaos": a.chaos, "outage": a.outage, "replay": a.replay})
         show(reply)
         while reply["status"] == "awaiting_approval":
-            approver = input("\nApprover user id (e.g. admin): ").strip()
+            approver = input("\nApprover user id (e.g. instructor): ").strip()
             decision = input("Decision [approve/reject]: ").strip().lower()
             try:
                 reply = service.resume(reply["thread_id"], approver, decision)

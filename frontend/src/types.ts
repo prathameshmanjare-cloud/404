@@ -19,7 +19,7 @@ export type Tier = "primary" | "fallback" | "template" | "none";
 export interface User {
   user_id: string;
   name: string;
-  role: "user" | "admin";
+  role: "user" | "instructor";
 }
 
 export interface Controls {
@@ -68,6 +68,35 @@ export interface RunInfo {
   cached?: boolean;
 }
 
+// The central rules (backend rules.py) a response went through: hard = required, soft = advice (target 85%).
+export interface RuleResult {
+  id: string;
+  name: string;
+  tier: "hard" | "soft";
+  stage: "prompt" | "code";
+  status: "pass" | "fail" | "approval" | "n/a";
+  detail: string;
+  tip: string;
+}
+
+export interface RulesReport {
+  hard: RuleResult[];
+  soft: RuleResult[];
+  summary: {
+    hard_passed: number;
+    hard_total: number;
+    hard_failed: number;
+    hard_waiting: number;
+    hard_ok: boolean;
+    soft_passed: number;
+    soft_total: number;
+    soft_score: number;
+    soft_target: number;
+    soft_ok: boolean;
+    soft_needed: number;
+  };
+}
+
 export interface Reply {
   thread_id: string;
   status: Status;
@@ -76,6 +105,7 @@ export interface Reply {
   language: "python" | "javascript" | null;
   answer: string | null;
   pii: PiiFinding[];
+  rules?: RulesReport | null;
   denial?: Denial | null;
   code: string | null;
   tests: string | null;
@@ -93,6 +123,26 @@ export interface Reply {
   run_key?: string | null;                 // hash of user + code + tests (first 12 characters)
 }
 
+// Instructors only: what waits for a decision. Students' finished runs are never part of it.
+export interface QueuedCode {
+  run_id: string;
+  owner: string;
+  owner_name: string;
+  created: number;
+  reply: Reply;
+}
+
+export interface QueuedSnippet extends SnippetApproval {
+  owner_name: string;
+  request: string;
+  language: string | null;
+}
+
+export interface ApprovalQueue {
+  code: QueuedCode[];
+  snippets: QueuedSnippet[];
+}
+
 export interface RunRecord {
   run_id: string;
   owner: string;
@@ -106,12 +156,28 @@ export interface HistoryEntry {
   reply: Reply;
 }
 
+// A Run-tab snippet that needs a person (file or network access). The snippet text is masked.
+export interface SnippetApproval {
+  snippet_id: string;
+  thread_id: string;
+  snippet: string;
+  requested_by: string;
+  reasons: string[];
+  status: "pending" | "approved" | "rejected";
+  decided_by: string | null;
+  created: number;
+}
+
 export interface ExecuteResult {
   thread_id: string;
+  // ran: output below; needs_approval: waiting for an instructor; rejected: an instructor said no (nothing ran)
+  status?: "ran" | "needs_approval" | "rejected";   // missing on older backends: a finished run
   exit_code: number | null;
   timed_out: boolean;
   output: string;
   sandbox: string;
+  policy?: { decision: string; reasons: string[] };
+  approval?: SnippetApproval | null;
 }
 
 export interface Health {
@@ -134,11 +200,18 @@ export interface GateResult {
   passed: boolean;
   hard: { passed: number; total: number };
   soft: { passed: number; total: number; needed: number };
+  // The central rules suite: 20 hard + 20 soft cases (all hard required, 85% of soft).
+  rules?: {
+    passed: boolean;
+    hard: { passed: number; total: number };
+    soft: { passed: number; total: number; needed: number };
+    cases: GateCase[];
+  } | null;
   failing: string[];
   cases: GateCase[];
 }
 
-// A ticket as the admin's Tickets page shows it (all text already masked by the backend).
+// A ticket as the instructor's Tickets page shows it (all text already masked by the backend).
 export interface TicketRecord {
   ticket_id: string;
   run_id: string | null;

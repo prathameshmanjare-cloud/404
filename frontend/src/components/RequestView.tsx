@@ -2,11 +2,12 @@ import { useState } from "react";
 import type { HistoryEntry } from "../types";
 import CodeBlock from "./CodeBlock";
 import RunPanel from "./RunPanel";
+import RulesPanel, { rulesMark } from "./RulesPanel";
 import AccessDenied from "./AccessDenied";
 import { LANGUAGE, PII_LABEL, statusInfo, steps, TIER } from "./status";
 import type { PiiFinding } from "../types";
 
-type Tab = "answer" | "overview" | "code" | "tests" | "run" | "results" | "ticket";
+type Tab = "answer" | "overview" | "rules" | "code" | "tests" | "run" | "results" | "ticket";
 
 // Policy reasons read "Category: detail" ("Deletes or damages files: calls shutil.rmtree").
 function ReasonList({ reasons }: { reasons: string[] }) {
@@ -59,9 +60,11 @@ interface Props {
   role: string | undefined;
   busy: boolean;
   onDecide: (d: "approve" | "reject") => void;
+  // An instructor reviewing a student's request from the approval queue: decide only, no Run tab.
+  reviewing?: boolean;
 }
 
-export default function RequestView({ entry, userId, role, busy, onDecide }: Props) {
+export default function RequestView({ entry, userId, role, busy, onDecide, reviewing }: Props) {
   const r = entry.reply;
   const s = statusInfo(r.status);
   const tier = TIER[r.tier] ?? { label: r.tier, help: "" };
@@ -70,9 +73,10 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
   const tabs: { id: Tab; label: string; show: boolean; mark?: string }[] = [
     { id: "answer", label: "Answer", show: !!r.answer },
     { id: "overview", label: "Overview", show: true },
+    { id: "rules", label: "Rules", show: !!r.rules, mark: r.rules ? rulesMark(r.rules) : undefined },
     { id: "code", label: r.sql ? "Query" : "Code", show: !!(r.code || r.sql) },
     { id: "tests", label: "Tests", show: !!r.tests },
-    { id: "run", label: "Run", show: !!r.code, mark: r.status === "done" ? "ready" : undefined },
+    { id: "run", label: "Run", show: !!r.code && !reviewing, mark: r.status === "done" ? "ready" : undefined },
     {
       id: "results", label: "Test results", show: !!r.run,
       mark: r.run ? (r.run.exit_code === 0 ? "pass" : "fail") : undefined,
@@ -96,6 +100,12 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
           </div>
         </section>
         <AccessDenied denial={r.denial} />
+        {r.rules && (
+          <section className="card">
+            <h2 className="card-title">Rules check</h2>
+            <RulesPanel rules={r.rules} />
+          </section>
+        )}
       </div>
     );
   }
@@ -141,13 +151,13 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
             <h3>Approval needed before this code can run</h3>
             <p>The safety check found file or network access. Review the code in the Code tab.</p>
             <ReasonList reasons={r.policy?.reasons ?? []} />
-            {role !== "admin" && <p className="muted small">Only an admin can decide. Switch “Signed in as” to Admin.</p>}
+            {role !== "instructor" && <p className="muted small">Only an instructor can decide. Switch “Signed in as” to Instructor.</p>}
           </div>
           <div className="callout-actions">
-            <button className="primary" disabled={busy || role !== "admin"} onClick={() => onDecide("approve")}>
+            <button className="primary" disabled={busy || role !== "instructor"} onClick={() => onDecide("approve")}>
               Approve and run tests
             </button>
-            <button className="secondary" disabled={busy || role !== "admin"} onClick={() => onDecide("reject")}>
+            <button className="secondary" disabled={busy || role !== "instructor"} onClick={() => onDecide("reject")}>
               Reject
             </button>
           </div>
@@ -179,7 +189,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
             {r.status === "denied" && (
               <p className="muted small">
                 Deleting files, operating-system access, shell commands such as sudo, loops that never end and
-                dynamic code are refused automatically. File and network access can be approved by an admin.
+                dynamic code are refused automatically. File and network access can be approved by an instructor.
               </p>
             )}
           </div>
@@ -234,7 +244,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
               {!r.answer && <PrivacyCard pii={r.pii ?? []} />}
               <h3 className="section-title">Report</h3>
               <pre className="report">{r.report}</pre>
-              {r.status === "done" && r.code && (
+              {r.status === "done" && r.code && !reviewing && (
                 <button className="primary" onClick={() => setTab("run")}>Try it with your own input →</button>
               )}
             </div>
@@ -248,7 +258,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
               <CodeBlock code={r.tests} title={lang.tests} />
             </>
           )}
-          {active === "run" && r.code && <RunPanel reply={r} userId={userId} />}
+          {active === "run" && r.code && <RunPanel reply={r} userId={userId} role={role} />}
           {active === "results" && r.run && (
             <>
               <p className="muted small tab-intro">
@@ -259,6 +269,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
               <pre className="console">{r.run.output || "(no output)"}</pre>
             </>
           )}
+          {active === "rules" && r.rules && <RulesPanel rules={r.rules} />}
           {active === "ticket" && r.ticket && (
             <div className="overview">
               <dl className="facts">

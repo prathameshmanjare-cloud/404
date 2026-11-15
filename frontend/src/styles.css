@@ -273,7 +273,7 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 @media (max-width: 600px) { .denied { flex-direction: column; } }
 .reasons { margin: 6px 0; padding-left: 18px; line-height: 1.7; } .reasons strong { font-weight: 600; }
 
-/* ---------- tickets (admin) ---------- */
+/* ---------- tickets (instructor) ---------- */
 .nav-count { margin-left: 6px; font-size: 11px; font-weight: 700; background: var(--bad); color: #fff; border-radius: 999px; padding: 0 7px; }
 .tickets-page { padding: 20px 24px; max-width: 1280px; width: 100%; margin: 0 auto; }
 .ticket-stats { display: flex; gap: 28px; align-items: center; margin: 14px 0; flex-wrap: wrap; }
@@ -295,3 +295,14 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .callout.info { background: var(--info-soft); border-color: color-mix(in srgb, var(--info) 35%, transparent); color: var(--text); }
 .advice { margin: 10px 0 6px; padding: 10px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
 .advice ul { margin: 4px 0 0; padding-left: 18px; }
+
+.snippet-approvals { margin-top: 16px; display: grid; gap: 8px; }
+.snippet-approvals .console { margin: 6px 0; max-height: 160px; overflow: auto; }
+.queue-refresh { float: right; }
+.queue-snippet { margin-top: 8px; }
+.queue-snippet .console { margin: 6px 0; max-height: 140px; overflow: auto; }
+.rules .gate-summary { margin-bottom: 10px; }
+.rules-table td:first-child { min-width: 180px; }
+.rules-table tr.rule-failed td { background: var(--bad-soft); }
+.warn-text { color: var(--warn); }
+.mono { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); }

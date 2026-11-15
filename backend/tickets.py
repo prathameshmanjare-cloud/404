@@ -76,6 +76,10 @@ class TicketStore:
                 closed_by    TEXT
             );
         """)
+        from runs import LEGACY_IDS
+        for old_id, new_id in LEGACY_IDS.items():       # tickets saved before accounts were renamed
+            self._db.execute("UPDATE tickets SET user_id = ? WHERE user_id = ?", (new_id, old_id))
+            self._db.execute("UPDATE tickets SET closed_by = ? WHERE closed_by = ?", (new_id, old_id))
         self._lock = threading.Lock()
 
     def save(self, ticket: dict, run_id: str | None) -> None:
@@ -127,7 +131,8 @@ class TicketStore:
 
     @staticmethod
     def _view(row, now: float | None = None) -> dict:
-        """A ticket plus its response-time facts: when it is due, how long is left, how long it took."""
+        """A ticket plus its response-time facts: when it is due, how long is left, how long it took.
+        Text is masked again on every read, so rules added later also cover tickets saved before them."""
         (ticket_id, run_id, user_id, priority, sla_hours, reason, note, request, status, created, closed_at,
          closed_by) = row
         now = now or _time.time()
@@ -135,7 +140,7 @@ class TicketStore:
         end = closed_at if status == "closed" and closed_at else now
         return {
             "ticket_id": ticket_id, "run_id": run_id, "user_id": user_id, "priority": priority,
-            "sla_hours": sla_hours, "reason": reason, "handoff_note": note, "request": request,
+            "sla_hours": sla_hours, "reason": mask(reason), "handoff_note": mask(note), "request": mask(request),
             "status": status, "created": created, "due": due, "closed_at": closed_at, "closed_by": closed_by,
             "age_minutes": round((end - created) / 60, 1),            # open: waiting so far; closed: time to close
             "minutes_left": round((due - now) / 60, 1) if status == "open" else None,

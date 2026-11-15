@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { Controls, Health, HistoryEntry, Reply, RunRecord, User } from "./types";
+import type {
+  ApprovalQueue as Queue, Controls, ExecuteResult, Health, HistoryEntry, QueuedSnippet, Reply, RunRecord, User,
+} from "./types";
 import Header, { type Page } from "./components/Header";
 import Composer from "./components/Composer";
 import HistoryList from "./components/HistoryList";
+import ApprovalQueue from "./components/ApprovalQueue";
 import RequestView from "./components/RequestView";
 import QualityPage from "./components/QualityPage";
 import TicketsPage from "./components/TicketsPage";
@@ -17,7 +20,7 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [backendDown, setBackendDown] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
-  const [userId, setUserId] = useState("user_1");
+  const [userId, setUserId] = useState("student_a");
   const [controls, setControls] = useState<Controls>({ chaos: false, outage: false, replay: false });
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -26,6 +29,11 @@ export default function App() {
   const [pending, setPending] = useState<string | null>(null);
   const [openTickets, setOpenTickets] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Instructors only: what waits for a decision, the item being reviewed (not part of any history), and
+  // the outcome of snippets decided in this session.
+  const [queue, setQueue] = useState<Queue | null>(null);
+  const [review, setReview] = useState<HistoryEntry | null>(null);
+  const [snippetResults, setSnippetResults] = useState<Record<string, ExecuteResult>>({});
 
   useEffect(() => {
     api
@@ -36,7 +44,7 @@ export default function App() {
       })
       .then((u) => {
         setUsers(u);
-        if (u.length && !u.some((x) => x.user_id === "user_1")) setUserId(u[0].user_id);
+        if (u.length && !u.some((x) => x.user_id === "student_a")) setUserId(u[0].user_id);
       })
       .catch(() => setBackendDown(true));
   }, []);
@@ -49,6 +57,9 @@ export default function App() {
     let cancelled = false;
     setHistory([]);
     setSelected(null);
+    setQueue(null);
+    setReview(null);
+    setSnippetResults({});
     setError(null);
     setSignedIn(false);
     api
@@ -59,7 +70,7 @@ export default function App() {
           setHistory(toEntries(runs));
           setSignedIn(true);
         }
-        return refreshTicketCount();
+        return Promise.all([refreshTicketCount(), refreshQueue()]);
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -69,10 +80,10 @@ export default function App() {
     };
   }, [userId]);
 
-  // Admins see how many tickets are open; everyone else never asks (the server would refuse anyway).
-  const isAdmin = role === "admin";
+  // Instructors see how many tickets are open; everyone else never asks (the server would refuse anyway).
+  const isAdmin = role === "instructor";
   async function refreshTicketCount() {
-    if (users.find((u) => u.user_id === userId)?.role !== "admin") {
+    if (users.find((u) => u.user_id === userId)?.role !== "instructor") {
       setOpenTickets(0);
       return;
     }
@@ -83,8 +94,38 @@ export default function App() {
     }
   }
   useEffect(() => {
-    if (!isAdmin && page === "tickets") setPage("assistant");   // the Tickets page is for admins only
+    if (!isAdmin && page === "tickets") setPage("assistant");   // the Tickets page is for instructors only
   }, [isAdmin, page]);
+
+  async function refreshQueue() {
+    if (users.find((u) => u.user_id === userId)?.role !== "instructor") return;
+    try {
+      setQueue(await api.approvals());
+    } catch {
+      /* keep what is on screen */
+    }
+  }
+
+  function openQueued(runId: string) {
+    const item = queue?.code.find((c) => c.run_id === runId);
+    if (!item) return;
+    setSelected(null);
+    setReview({ userId: item.owner_name, at: item.created * 1000, reply: item.reply });
+  }
+
+  async function decideSnippet(s: QueuedSnippet, decision: "approve" | "reject") {
+    setBusy(true);
+    setError(null);
+    try {
+      const out = await api.decideSnippet(s.snippet_id, decision);
+      setSnippetResults((r) => ({ ...r, [s.snippet_id]: out }));
+      await refreshQueue();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // The backend keeps only each user's last 3 requests; reload so older ones drop off the list too.
   async function refreshHistory() {
@@ -94,7 +135,7 @@ export default function App() {
       /* keep what is on screen */
     }
   }
-  const current = history.find((h) => h.reply.thread_id === selected) ?? null;
+  const current = review ?? history.find((h) => h.reply.thread_id === selected) ?? null;
 
   function upsert(reply: Reply) {
     setHistory((h) => {
@@ -105,6 +146,7 @@ export default function App() {
       return copy;
     });
     setSelected(reply.thread_id);
+    setReview(null);
   }
 
   async function send(text: string) {
@@ -130,6 +172,12 @@ export default function App() {
     setError(null);
     try {
       const reply = await api.resume(current.reply.thread_id, decision);
+      if (review) {
+        // A student's request from the approval queue: show the outcome once, never add it to any history.
+        setReview({ ...review, reply });
+        await refreshQueue();
+        return;
+      }
       await refreshHistory();
       upsert(reply);
     } catch (e) {
@@ -176,7 +224,13 @@ export default function App() {
         <div className="workspace">
           <aside className="sidebar">
             <Composer busy={busy || !signedIn} onSend={send} />
-            <HistoryList history={history} selected={selected} onSelect={setSelected} isAdmin={role === "admin"} />
+            {isAdmin && (
+              <ApprovalQueue queue={queue} selected={review?.reply.thread_id ?? null} busy={busy}
+                             onSelectCode={openQueued} onDecideSnippet={decideSnippet}
+                             snippetResults={snippetResults} onRefresh={refreshQueue} />
+            )}
+            <HistoryList history={history} selected={review ? null : selected}
+                         onSelect={(id) => { setReview(null); setSelected(id); }} />
           </aside>
           <main className="main">
             {pending ? (
@@ -193,6 +247,7 @@ export default function App() {
               </section>
             ) : current ? (
               <RequestView key={current.reply.thread_id} entry={current} userId={userId} role={role} busy={busy}
+                           reviewing={!!review}
                            onDecide={decide} />
             ) : (
               <div className="center-state">

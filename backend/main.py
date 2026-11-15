@@ -81,6 +81,11 @@ class ExecuteIn(BaseModel):
     snippet: str = ""
 
 
+class SnippetDecisionIn(BaseModel):
+    snippet_id: str
+    decision: str
+
+
 class FeedbackIn(BaseModel):
     thread_id: str
     text: str
@@ -147,9 +152,27 @@ def execute(body: ExecuteIn, ident: Identity = Depends(session_identity)) -> dic
     return _call(service.execute, body.thread_id, ident.user_id, body.snippet)
 
 
+@app.post("/execute/decide")
+def decide_snippet(body: SnippetDecisionIn, ident: Identity = Depends(session_identity)) -> dict:
+    """Instructors only: approve (and run) or reject a Run-tab snippet that is waiting for approval."""
+    return _call(service.decide_snippet, body.snippet_id, ident.user_id, body.decision)
+
+
+@app.get("/approvals")
+def approval_queue(ident: Identity = Depends(session_identity)) -> dict:
+    """Instructors only: code and Run-tab snippets waiting for a decision (never students' history)."""
+    return _call(service.approval_queue, ident.user_id)
+
+
+@app.get("/execute/approvals/{thread_id}")
+def snippet_approvals(thread_id: str, ident: Identity = Depends(session_identity)) -> list[dict]:
+    """The thread's snippet approvals (pending, approved, rejected), for its owner."""
+    return _call(service.snippet_approvals, thread_id, ident.user_id)
+
+
 @app.get("/runs/{run_id}")
 def get_run(run_id: str, ident: Identity = Depends(session_identity)) -> dict:
-    """One run, only for its owner (or an admin). Missing and not-yours give the same 404."""
+    """One run, only for its owner (instructors too). Missing and not-yours give the same 404."""
     with acting_as(ident):
         try:
             return service.get_my_run(run_id)
@@ -159,7 +182,7 @@ def get_run(run_id: str, ident: Identity = Depends(session_identity)) -> dict:
 
 @app.get("/runs")
 def list_runs(ident: Identity = Depends(session_identity)) -> list[dict]:
-    """The caller's own runs, newest first (an admin sees every run). The UI history comes from here."""
+    """The caller's own runs, newest first (for every role). The UI history comes from here."""
     with acting_as(ident):
         return service.list_my_runs()
 
@@ -170,13 +193,13 @@ class TicketStatusIn(BaseModel):
 
 @app.get("/tickets")
 def tickets(status: str = "all", ident: Identity = Depends(session_identity)) -> dict:
-    """Every ticket with priority, response time and status. Admins only."""
+    """Every ticket with priority, response time and status. Instructors only."""
     return _call(service.list_tickets, ident, status)
 
 
 @app.post("/tickets/{ticket_id}/status")
 def ticket_status(ticket_id: str, body: TicketStatusIn, ident: Identity = Depends(session_identity)) -> dict:
-    """Close or reopen a ticket. Admins only."""
+    """Close or reopen a ticket. Instructors only."""
     return _call(service.set_ticket_status, ident, ticket_id, body.status)
 
 

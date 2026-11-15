@@ -77,6 +77,10 @@ def _db_path() -> str:
     return str(full)
 
 
+# Account ids before they were renamed to match the problem statement (students and an instructor).
+LEGACY_IDS = {"user_1": "student_a", "user_2": "student_b", "user_3": "student_c", "admin": "instructor"}
+
+
 class RunStore:
     """Runs and idempotent results live in SQLite, so history survives a backend restart.
     Escalation counters (sessions) stay in memory: they only matter within a conversation."""
@@ -105,6 +109,8 @@ class RunStore:
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(runs)")}
         if "req_key" not in cols:                        # databases created before request keys existed
             self._db.execute("ALTER TABLE runs ADD COLUMN req_key TEXT")
+        for old_id, new_id in LEGACY_IDS.items():       # history saved before accounts were renamed
+            self._db.execute("UPDATE runs SET owner = ? WHERE owner = ?", (new_id, old_id))
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
 
@@ -151,22 +157,35 @@ class RunStore:
             row = self._db.execute("SELECT seq, run_id, owner, request, status, result, created FROM runs "
                                    "WHERE run_id = ?", (run_id,)).fetchone()
         run = self._row(row) if row else None
-        if run is None or (run.owner != caller.user_id and caller.role != "admin"):
+        if run is None or run.owner != caller.user_id:
             # Same answer for "missing" and "not yours": the caller learns nothing about other users.
+            # Instructors too: they never browse students' history (they review only the approval queue).
             raise NotFound("Run not found. You can only view your own runs.")
         return run
 
     def list_runs(self) -> list[Run]:
-        """The signed-in caller's runs, newest first (every run for an admin). No user argument."""
+        """The signed-in caller's own runs, newest first. No user argument; the same for every role."""
         caller = current_identity()
-        sql = "SELECT seq, run_id, owner, request, status, result, created FROM runs"
-        args: tuple = ()
-        if caller.role != "admin":
-            sql += " WHERE owner = ?"
-            args = (caller.user_id,)
         with self._lock:
-            rows = self._db.execute(sql + " ORDER BY seq DESC", args).fetchall()
+            rows = self._db.execute("SELECT seq, run_id, owner, request, status, result, created FROM runs "
+                                    "WHERE owner = ? ORDER BY seq DESC", (caller.user_id,)).fetchall()
         return [self._row(r) for r in rows]
+
+    def awaiting_approval(self) -> list[Run]:
+        """Runs paused for an approver. Only the approval queue reads this (approvers only, checked by the caller)."""
+        with self._lock:
+            rows = self._db.execute("SELECT seq, run_id, owner, request, status, result, created FROM runs "
+                                    "WHERE status = 'awaiting_approval' ORDER BY seq").fetchall()
+        return [self._row(r) for r in rows]
+
+    def get_for_review(self, run_id: str) -> Run:
+        """One run for an approver deciding on it (snippet approvals). Not reachable from the history API."""
+        with self._lock:
+            row = self._db.execute("SELECT seq, run_id, owner, request, status, result, created FROM runs "
+                                   "WHERE run_id = ?", (run_id,)).fetchone()
+        if not row:
+            raise NotFound("Run not found.")
+        return self._row(row)
 
     # idempotency
     def result_for(self, key: str) -> dict | None:

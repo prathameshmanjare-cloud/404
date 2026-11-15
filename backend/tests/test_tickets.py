@@ -1,4 +1,4 @@
-"""Admin Tickets page: every ticket with priority, response time and open/closed status. Admins only."""
+"""Instructor Tickets page: every ticket with priority, response time and open/closed status. Instructors only."""
 import json
 
 from fastapi.testclient import TestClient
@@ -32,22 +32,22 @@ def _stub():
 def test_admin_sees_every_ticket_with_priority_response_time_and_status():
     client = _client()
     with use_backend(_stub()):
-        client.post("/submit", json={"text": STUDENT_C}, headers=_sign_in(client, "user_3"))
-        client.post("/submit", json={"text": "can I talk to a person please"}, headers=_sign_in(client, "user_1"))
-    data = client.get("/tickets", headers=_sign_in(client, "admin")).json()
+        client.post("/submit", json={"text": STUDENT_C}, headers=_sign_in(client, "student_c"))
+        client.post("/submit", json={"text": "can I talk to a person please"}, headers=_sign_in(client, "student_a"))
+    data = client.get("/tickets", headers=_sign_in(client, "instructor")).json()
     assert data["counts"] == {"open": 2, "closed": 0}
     by_user = {t["user_id"]: t for t in data["tickets"]}
-    p1 = by_user["user_3"]
+    p1 = by_user["student_c"]
     assert p1["priority"] == "P1" and p1["sla_hours"] == 1 and p1["status"] == "open"
     assert 0 < p1["minutes_left"] <= 60 and p1["within_sla"] is True and p1["due"] > p1["created"]
-    assert by_user["user_1"]["priority"] == "P2" and by_user["user_1"]["sla_hours"] == 4
+    assert by_user["student_a"]["priority"] == "P2" and by_user["student_a"]["sla_hours"] == 4
 
 
 def test_tickets_never_show_personal_data():
     client = _client()
     with use_backend(_stub()):
-        client.post("/submit", json={"text": STUDENT_C}, headers=_sign_in(client, "user_3"))
-    blob = json.dumps(client.get("/tickets", headers=_sign_in(client, "admin")).json())
+        client.post("/submit", json={"text": STUDENT_C}, headers=_sign_in(client, "student_c"))
+    blob = json.dumps(client.get("/tickets", headers=_sign_in(client, "instructor")).json())
     for raw in ("sk-proj-abc123def456ghi789", "2345 6789 0124", "Rahul Sharma"):
         assert raw not in blob
     assert "[SECRET]" in blob and "[AADHAAR]" in blob and "[NAME]" in blob
@@ -55,48 +55,48 @@ def test_tickets_never_show_personal_data():
 
 def test_admin_can_close_and_reopen():
     client = _client()
-    admin = _sign_in(client, "admin")
+    instructor = _sign_in(client, "instructor")
     with use_backend(_stub()):
-        client.post("/submit", json={"text": "get me a human"}, headers=_sign_in(client, "user_2"))
-    tid = client.get("/tickets", headers=admin).json()["tickets"][0]["ticket_id"]
-    closed = client.post(f"/tickets/{tid}/status", json={"status": "closed"}, headers=admin).json()
-    assert closed["status"] == "closed" and closed["closed_by"] == "admin" and closed["minutes_left"] is None
+        client.post("/submit", json={"text": "get me a human"}, headers=_sign_in(client, "student_b"))
+    tid = client.get("/tickets", headers=instructor).json()["tickets"][0]["ticket_id"]
+    closed = client.post(f"/tickets/{tid}/status", json={"status": "closed"}, headers=instructor).json()
+    assert closed["status"] == "closed" and closed["closed_by"] == "instructor" and closed["minutes_left"] is None
     assert closed["age_minutes"] >= 0 and closed["within_sla"] is True
-    assert client.get("/tickets?status=open", headers=admin).json()["tickets"] == []
-    assert len(client.get("/tickets?status=closed", headers=admin).json()["tickets"]) == 1
-    reopened = client.post(f"/tickets/{tid}/status", json={"status": "open"}, headers=admin).json()
+    assert client.get("/tickets?status=open", headers=instructor).json()["tickets"] == []
+    assert len(client.get("/tickets?status=closed", headers=instructor).json()["tickets"]) == 1
+    reopened = client.post(f"/tickets/{tid}/status", json={"status": "open"}, headers=instructor).json()
     assert reopened["status"] == "open" and reopened["closed_at"] is None
-    assert client.post("/tickets/T-NOPE/status", json={"status": "closed"}, headers=admin).status_code == 404
-    assert client.post(f"/tickets/{tid}/status", json={"status": "done"}, headers=admin).status_code == 400
+    assert client.post("/tickets/T-NOPE/status", json={"status": "closed"}, headers=instructor).status_code == 404
+    assert client.post(f"/tickets/{tid}/status", json={"status": "done"}, headers=instructor).status_code == 400
 
 
 def test_only_admins_can_see_or_change_tickets():
     client = _client()
     with use_backend(_stub()):
-        client.post("/submit", json={"text": "get me a human"}, headers=_sign_in(client, "user_2"))
-    user = _sign_in(client, "user_2")
+        client.post("/submit", json={"text": "get me a human"}, headers=_sign_in(client, "student_b"))
+    user = _sign_in(client, "student_b")
     r = client.get("/tickets", headers=user)
-    assert r.status_code == 403 and "Only an admin can view tickets" in r.json()["detail"]
-    tid = client.get("/tickets", headers=_sign_in(client, "admin")).json()["tickets"][0]["ticket_id"]
+    assert r.status_code == 403 and "Only an instructor can view tickets" in r.json()["detail"]
+    tid = client.get("/tickets", headers=_sign_in(client, "instructor")).json()["tickets"][0]["ticket_id"]
     r = client.post(f"/tickets/{tid}/status", json={"status": "closed"}, headers=user)
-    assert r.status_code == 403 and "Only an admin can change" in r.json()["detail"]
+    assert r.status_code == 403 and "Only an instructor can change" in r.json()["detail"]
     assert client.get("/tickets").status_code == 401                   # not signed in at all
 
 
 def test_tickets_outlive_the_three_request_history():
     client = _client()
-    u = _sign_in(client, "user_1")
+    u = _sign_in(client, "student_a")
     with use_backend(_stub()):
         client.post("/submit", json={"text": "get me a human"}, headers=u)
         for i in range(4):                                             # pushes the ticket's run out of history
             client.post("/submit", json={"text": f"write f number {i}"}, headers=u)
     assert all("human" not in r["reply"]["request"] for r in client.get("/runs", headers=u).json())
-    assert len(client.get("/tickets", headers=_sign_in(client, "admin")).json()["tickets"]) == 1
+    assert len(client.get("/tickets", headers=_sign_in(client, "instructor")).json()["tickets"]) == 1
 
 
 def test_overdue_and_response_time_are_computed():
     store = TicketStore(":memory:")
-    store.save({"ticket_id": "T-1", "user_id": "user_1", "priority": "P1", "sla_hours": 1, "reason": "angry",
+    store.save({"ticket_id": "T-1", "user_id": "student_a", "priority": "P1", "sla_hours": 1, "reason": "angry",
                 "handoff_note": "n", "request": "r"}, "run-1")
     row = store._db.execute(store._SELECT + " WHERE ticket_id='T-1'").fetchone()
     created = row[9]

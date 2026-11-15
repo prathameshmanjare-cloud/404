@@ -63,19 +63,19 @@ def _stub(code):
 def test_denials_escalate_once_and_do_not_block_later_requests():
     bad = "import os\n\ndef f():\n    return os.system('ls')\n"
     with use_backend(_stub(bad)):
-        first = service.submit("user_1", "list files")
-        second = service.submit("user_1", "list files again")
+        first = service.submit("student_a", "list files")
+        second = service.submit("student_a", "list files again")
     assert first["status"] == second["status"] == "denied"
     assert not first["ticket"] and second["ticket"]          # one ticket, at the second denial
     with use_backend(_stub("def f():\n    return 1\n")):
-        later = service.submit("user_1", "write f")
+        later = service.submit("student_a", "write f")
     assert later["status"] == "done" and not later["ticket"]  # not escalated forever
 
 
 def test_unparsable_output_is_not_counted_as_a_denial():
     with use_backend(_stub("def f(:\n")):
         for _ in range(3):
-            reply = service.submit("user_1", "write f")
+            reply = service.submit("student_a", "write f")
     assert reply["status"] == "invalid_output" and not reply["ticket"]
     assert "not valid Python" in reply["report"]
 

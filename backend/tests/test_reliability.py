@@ -88,9 +88,9 @@ def test_prompt_is_masked_before_backend():
 
 def test_outage_serves_template_for_known_task_and_ticket_for_unknown():
     with use_backend(StubBackend({})):
-        known = service.submit("user_1", "Write a Python function that checks if a string is a palindrome",
+        known = service.submit("student_a", "Write a Python function that checks if a string is a palindrome",
                                {"outage": True})
-        unknown = service.submit("user_1", "Write a function that parses RFC 3339 timestamps", {"outage": True})
+        unknown = service.submit("student_a", "Write a function that parses RFC 3339 timestamps", {"outage": True})
     assert known["tier"] == "template" and known["status"] == "done"
     assert known["code"] == TEMPLATES["palindrome"]["code"]
     assert "template tier" in known["report"]
@@ -102,7 +102,7 @@ def test_template_tier_never_auto_approves_risky_code(monkeypatch):
     risky = dict(TEMPLATES["palindrome"], code="def f(p):\n    return open(p).read()\n")
     monkeypatch.setitem(TEMPLATES, "palindrome", risky)
     with use_backend(StubBackend({})):
-        reply = service.submit("user_1", "palindrome please", {"outage": True})
+        reply = service.submit("student_a", "palindrome please", {"outage": True})
     assert reply["status"] == "awaiting_approval" and EXECUTIONS.count == 0
 
 

@@ -38,7 +38,7 @@ def test_mask_hides(raw, label):
 
 
 @pytest.mark.parametrize("raw", ["order 123456", "ref 1234 5678 9012 3456", "date 2024-01-05", "x = 10",
-                                 "aadhaar-like 1234 5678 9012"])
+                                 "ref 1234 5678 9012"])
 def test_mask_keeps(raw):
     assert mask(raw) == raw
 
@@ -50,23 +50,23 @@ def test_luhn():
 
 # ---------- identity, quota, runs
 def test_identity_from_config_only():
-    me = get_identity(CFG, "user_1")
-    assert me.role == "user"
+    me = get_identity(CFG, "student_a")
+    assert me.role == "student"
     assert not can_approve(CFG, me)
-    assert can_approve(CFG, get_identity(CFG, "admin"))
+    assert can_approve(CFG, get_identity(CFG, "instructor"))
     with pytest.raises(UnknownUser):
         get_identity(CFG, "root")
 
 
 def test_quota():
-    me = get_identity(CFG, "user_1")
-    QUOTA.set_used(me.user_id, CFG["quota"]["user"] - 1)
+    me = get_identity(CFG, "student_a")
+    QUOTA.set_used(me.user_id, CFG["quota"]["student"] - 1)
     assert check_quota(CFG, me)
     assert not check_quota(CFG, me)
 
 
 def test_not_found_is_identical():
-    a, b = get_identity(CFG, "user_1"), get_identity(CFG, "user_2")
+    a, b = get_identity(CFG, "student_a"), get_identity(CFG, "student_b")
     RUNS.create("r1", b.user_id, "x")
     errors = []
     for rid in ("r1", "missing"):
@@ -76,9 +76,10 @@ def test_not_found_is_identical():
         errors.append(str(exc.value))
     assert errors[0] == errors[1]
     with acting_as(b):
-        assert RUNS.get_run("r1").owner == "user_2"
-    with acting_as(get_identity(CFG, "admin")):
-        assert RUNS.get_run("r1")
+        assert RUNS.get_run("r1").owner == "student_b"
+    with acting_as(get_identity(CFG, "instructor")):           # instructors cannot open students' runs
+        with pytest.raises(NotFound):
+            RUNS.get_run("r1")
 
 
 def test_idempotency_key():

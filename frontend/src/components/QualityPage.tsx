@@ -67,6 +67,12 @@ export default function QualityPage({ controls, onControls }: Props) {
               <div className={`gate-verdict ${result.passed ? "ok" : "bad"}`}>{result.passed ? "PASS" : "FAIL"}</div>
               <div className="metric"><span className="metric-value">{result.hard.passed}/{result.hard.total}</span><span className="muted small">hard cases (all required)</span></div>
               <div className="metric"><span className="metric-value">{result.soft.passed}/{result.soft.total}</span><span className="muted small">soft cases (need {result.soft.needed})</span></div>
+              {result.rules && (
+                <>
+                  <div className="metric"><span className="metric-value">{result.rules.hard.passed}/{result.rules.hard.total}</span><span className="muted small">hard rule cases (all required)</span></div>
+                  <div className="metric"><span className="metric-value">{result.rules.soft.passed}/{result.rules.soft.total}</span><span className="muted small">soft rule cases (need {result.rules.soft.needed})</span></div>
+                </>
+              )}
             </div>
             <div className="table-wrap">
               <table className="table">
@@ -74,7 +80,7 @@ export default function QualityPage({ controls, onControls }: Props) {
                   <tr><th>Case</th><th>Type</th><th>Area</th><th>Result</th><th>Detail</th></tr>
                 </thead>
                 <tbody>
-                  {result.cases.map((c) => (
+                  {[...result.cases, ...(result.rules?.cases ?? [])].map((c) => (
                     <tr key={c.id}>
                       <td><strong>{c.id}</strong></td>
                       <td>{c.tier}</td>

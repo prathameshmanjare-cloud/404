@@ -1,7 +1,7 @@
 """check_access_request (R1): refuse, in code and before any model call, messages that claim another
 identity or ask for another user's data.
 
-Identity only ever comes from the signed-in user (config.yaml). Typing "I am user_2" or "I'm the admin"
+Identity only ever comes from the signed-in user (config.yaml). Typing "I am student_b" or "I'm the instructor"
 changes nothing, and asking for someone else's runs, code, history or tickets is refused with a clear
 message. The model never sees such a request, so it cannot be talked into "helping".
 """
@@ -17,7 +17,7 @@ from guard.identity import Identity
 class Denial:
     """Why a message was refused. kind: impersonation | role | user_data | group_data."""
     kind: str
-    target: str   # who or what was targeted, ready to show: "User 2 (user_2)", "admin", "other users"
+    target: str   # who or what was targeted, ready to show: "Student B (student_b)", "instructor", "other users"
 
     def __str__(self) -> str:  # used in logs
         return f"{self.kind}: {self.target}"
@@ -33,7 +33,7 @@ GROUP_TARGETS = (r"another\s+user'?s?|other\s+users?'?s?|all\s+(?:the\s+)?users?
 
 
 def _identity_names(config: dict) -> dict[str, set[str]]:
-    """Every way a configured user can be named: user_2, user 2, user2, "User 2"; roles too."""
+    """Every way a configured user can be named: student_b, student b, studentb, "Student B"; roles too."""
     names: dict[str, set[str]] = {}
     for uid, u in config.get("users", {}).items():
         forms = {uid.lower(), uid.lower().replace("_", " "), uid.lower().replace("_", ""), u.get("name", "").lower()}
@@ -43,7 +43,7 @@ def _identity_names(config: dict) -> dict[str, set[str]]:
 
 def _role_words(config: dict) -> set[str]:
     roles = {u["role"].lower() for u in config.get("users", {}).values()}
-    return roles | {"admin", "administrator", "instructor", "teacher", "superuser", "root", "moderator", "staff"}
+    return roles | {"instructor", "administrator", "instructor", "teacher", "superuser", "root", "moderator", "staff"}
 
 
 def check_access_request(text: str, caller: Identity, config: dict) -> Denial | None:
@@ -51,7 +51,7 @@ def check_access_request(text: str, caller: Identity, config: dict) -> Denial | 
     t = " ".join((text or "").lower().split())
     others = {uid: forms for uid, forms in _identity_names(config).items() if uid != caller.user_id}
     other_names = sorted({f for forms in others.values() for f in forms}, key=len, reverse=True)
-    generic_user = r"user[\s_-]?\d+"
+    generic_user = r"user[\s_-]?\d+|student[\s_-][a-z]\b"     # also accounts that do not exist: "student d"
     target = "|".join([re.escape(n) for n in other_names] + [generic_user])
 
     def is_self(match_text: str) -> bool:
@@ -59,30 +59,28 @@ def check_access_request(text: str, caller: Identity, config: dict) -> Denial | 
         return any(re.fullmatch(rf"(?:{re.escape(o)})", match_text.strip()) for o in own)
 
     def who(match_text: str) -> str:
-        """Name the targeted user the way the UI shows users: "User 2 (user_2)"."""
+        """Name the targeted user the way the UI shows users: "Student B (student_b)"."""
         m = match_text.strip()
         for uid, forms in others.items():
             if m in forms:
                 return config["users"][uid].get("name", uid)
         return "another user"
 
-    # 1. Claiming to be another user ("I am user_2", "log in as user 2", "on behalf of User 2").
+    # 1. Claiming to be another user ("I am student_b", "log in as student b", "on behalf of Student B").
     for m in re.finditer(rf"\b(?:{CLAIM_VERBS})\s+(?:an?\s+|the\s+)?({target})\b", t):
         if not is_self(m.group(1)):
-            if m.group(1).strip() in _role_words(config):   # "I'm the admin" is a role claim
+            if m.group(1).strip() in _role_words(config):   # "I'm the instructor" is a role claim
                 return Denial("role", m.group(1).strip())
             return Denial("impersonation", who(m.group(1)))
 
-    # 2. Claiming a role the account does not have ("I'm an admin", "make me admin").
+    # 2. Claiming a role the account does not have ("I'm an instructor", "make me instructor").
     for role in _role_words(config) - {caller.role}:
         if re.search(rf"\b(?:{CLAIM_VERBS})\s+(?:an?\s+|the\s+)?{re.escape(role)}\b", t):
             return Denial("role", role)
 
-    # Admins may see every run (they approve code), so only identity claims apply to them.
-    if caller.role == "admin":
-        return None
+    # Instructors are refused too: they review only the approval queue, never students' history.
     # A request to WRITE code that mentions users ("a SQL query that lists all users", "a function that
-    # returns data for user 2") is a coding task, not a request for our users' data.
+    # returns data for student b") is a coding task, not a request for our users' data.
     coding = re.search(r"\b(?:write|create|implement|build|generate|make|code|design)\b.*\b(?:function|class|"
                        r"method|query|program|script|sql|api|endpoint|module|schema|table)\b", t)
     asking_about_users = rf"(?:{target}|{GROUP_TARGETS}|others|anyone\s+else)"
@@ -95,7 +93,7 @@ def check_access_request(text: str, caller: Identity, config: dict) -> Denial | 
     if coding:
         return None
 
-    # 3. Asking for a named user's data ("user_2's runs", "history of user 2", "show user 2 code").
+    # 3. Asking for a named user's data ("student_b's runs", "history of student b", "show student b code").
     for m in re.finditer(rf"\b({target})(?:'s|s'|')?\s+(?:last\s+|latest\s+|recent\s+|previous\s+|old\s+)?"
                          rf"(?:{DATA_WORDS})\b", t):
         if not is_self(m.group(1)):

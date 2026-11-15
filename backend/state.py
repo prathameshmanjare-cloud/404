@@ -65,7 +65,7 @@ class Ticket(BaseModel):
 class CodeSmithState(TypedDict, total=False):
     thread_id: str
     user_id: str                       # from config, never from the message
-    role: Literal["user", "admin"]
+    role: Literal["student", "instructor"]
     request: str                       # already masked
     controls: dict
     route: Route | None
@@ -88,3 +88,4 @@ class CodeSmithState(TypedDict, total=False):
     status: str
     report: str | None
     notes: list[str]
+    rules: dict | None                 # prompt-stage RulesReport (rules.py); code rules are added per reply

@@ -3,7 +3,8 @@
 It parses the code with `ast` and NEVER runs it. Deny always wins over approval.
 
 DENY (refused automatically, nothing runs):
-  * operating-system access   import os / sys / subprocess / ctypes / ... (the PDF's "import os" rule)
+  * operating-system access   import os / sys / subprocess / ctypes / ... (the PDF's "import os" rule),
+                              except os used ONLY to read files (os.path, listdir, walk, ...): that needs approval
   * system commands           os.system, popen, exec*, spawn*, fork, kill, subprocess
   * deleting files            os.remove / unlink / rmdir, shutil.rmtree / move, Path.unlink / rmdir,
                               truncate, chmod / chown (called, or merely referenced: rm = os.remove)
@@ -12,7 +13,8 @@ DENY (refused automatically, nothing runs):
   * sandbox escapes           __subclasses__, __globals__, __builtins__, frame internals, ...
   * infinite loops            `while True:` / endless iterators with no break, return or raise
 NEEDS APPROVAL (a person decides before anything runs):
-  * file access               open(), pathlib, io, tempfile, glob, shutil copy, zipfile, sqlite3, ...
+  * file access               open(), pathlib, io, tempfile, glob, shutil copy, zipfile, sqlite3, ...,
+                              and os used only for reading (os.path.exists, os.listdir, os.walk, os.stat)
   * network access            socket, requests, urllib, http, smtplib, ssl, asyncio, ...,
                               and any http:// or https:// address in the code
   * console input             input()
@@ -67,6 +69,12 @@ FILE_MODULES = {"pathlib", "io", "tempfile", "glob", "fnmatch", "shutil", "filei
 URL_IN_TEXT = re.compile(r"\bhttps?://[^\s'\"]+", re.I)
 NETWORK_MODULES = {"socket", "ssl", "requests", "urllib", "urllib3", "http", "httpx", "ftplib", "smtplib",
                    "poplib", "imaplib", "telnetlib", "asyncio", "aiohttp", "websocket", "websockets", "xmlrpc"}
+# Parts of `os` that only read files or folders. Code that uses os for these alone (os.path.exists,
+# os.listdir, os.walk, ...) asks a person instead of being refused. Any other use of os, or importing
+# os without using it for one of these, is still refused (the PDF's "import os" rule).
+OS_FILE_READ = {"path", "listdir", "scandir", "walk", "stat", "lstat", "fspath", "fsdecode", "fsencode", "sep",
+                "altsep", "extsep", "pathsep", "linesep", "curdir", "pardir", "fdopen", "read", "close",
+                "O_RDONLY"}
 FILE_CALLS = {"open", "Path", "read_text", "write_text", "read_bytes", "write_bytes", "mkdir", "iterdir",
               "glob", "rglob", "touch", "copy", "copyfile", "copytree"}
 # ---------------------------------------------------------------- ALLOW
@@ -170,9 +178,17 @@ def evaluate_code_policy(code: str) -> PolicyResult:
                   and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)
                   and isinstance(n.body[0].value.value, str)}
 
+    os_imports: list[str] = []      # decided after the walk, once we know what os is used for
+    os_uses: set[str] = set()       # os.<name> parts the code touches
+    os_opaque = False               # `os` itself passed around: we cannot tell what it is used for
+
     def check_import(module: str) -> None:
         root = module.split(".")[0]
-        if root in DENY_MODULES:
+        if root == "os":
+            os_imports.append(module)
+            if module.startswith("os.path"):
+                os_uses.add("path")
+        elif root in DENY_MODULES:
             deny.append(f"Operating-system access: imports {module} ({DENY_MODULES[root]})")
         elif root in FILE_MODULES:
             approve.append(f"File access: imports {module}")
@@ -195,7 +211,17 @@ def evaluate_code_policy(code: str) -> PolicyResult:
         elif called and short == "input":
             approve.append("Console input: calls input()")
 
+    attr_values = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Attribute, ast.Name)) and isinstance(node.ctx, ast.Load) \
+                and id(node) not in attr_values:
+            full = _dotted(node, aliases)
+            parts = full.split(".")
+            if parts[0] == "os":
+                if len(parts) > 1:
+                    os_uses.add(parts[1])
+                elif isinstance(node, ast.Name):
+                    os_opaque = True        # bare `os` used as a value: f(os), x = os
         if isinstance(node, ast.Import):
             for a in node.names:
                 check_import(a.name)
@@ -230,6 +256,16 @@ def evaluate_code_policy(code: str) -> PolicyResult:
             url = URL_IN_TEXT.search(node.value) if id(node) not in docstrings else None
             if url:
                 approve.append(f"Network access: contains the web address {url.group(0)[:60]}")
+
+    if os_imports:
+        reads = sorted(os_uses & OS_FILE_READ)
+        if reads and not os_opaque and os_uses <= OS_FILE_READ:
+            approve.append("File access: uses os only to read files or folders ("
+                           + ", ".join(f"os.{u}" for u in reads) + ")")
+        else:
+            other = sorted(os_uses - OS_FILE_READ)
+            why = f"; uses {', '.join('os.' + u for u in other)}" if other else ""
+            deny.append(f"Operating-system access: imports {os_imports[0]} ({DENY_MODULES['os']}{why})")
 
     deny += find_infinite_loops(code)
     # A call is also visited as an attribute/name; keep one reason per thing, preferring "calls".
@@ -279,8 +315,10 @@ _DESTRUCTIVE_REQUEST = [
      "Runs system commands: the request asks to install software"),
     (re.compile(r"\b(list|show|get|read|print|dump|see)\w*\b[^.?!]{0,25}\b(running\s+)?(processes|services)\b", re.I),
      "Operating-system access: the request asks to inspect the machine's processes"),
-    (re.compile(r"/etc/(passwd|shadow|hosts)\b|\b(environment\s+variables?|env\s+vars?|ssh\s+keys?|\.ssh\b|"
-                r"private\s+keys?|saved\s+passwords?|browser\s+(cookies|passwords|history)|keychain|registry\s+keys?)", re.I),
+    # Reading a FILE (even /etc/passwd or a key file) is not refused here: the generated code uses open(),
+    # which the code policy sends to a person for approval. Only credential stores and settings are refused.
+    (re.compile(r"\b(environment\s+variables?|env\s+vars?|saved\s+passwords?|browser\s+(cookies|passwords|"
+                r"history)|keychain|registry\s+keys?)", re.I),
      "Operating-system access: the request asks to read system secrets or settings"),
     # Only when code is being asked for: "explain what an infinite loop is" is a fine question.
     (re.compile(r"^(?=.*\b(write|create|make|build|generate|code|implement|give\s+me|program|script|function|"

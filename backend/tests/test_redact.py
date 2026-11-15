@@ -53,6 +53,12 @@ EXAMPLES = {
     "Aadhaar numbers":
         [("aadhaar 2345 6789 0124", "aadhaar [AADHAAR]", True),
          ("aadhaar 234567890123", "aadhaar [AADHAAR]", False)],            # fails Verhoeff, still masked
+    "Aadhaar numbers named by keyword but not in the valid format":
+        [("aadhaar 1234 5678 9012", "aadhaar [AADHAAR]", False),          # starts with 1: still masked
+         ("my aadhar no: 23456789012", "my aadhar no: [AADHAAR]", False)], # 11 digits
+    "PAN-like codes named by keyword but not in the valid format":
+        [("pan no ABCD1234F", "pan no [PAN]", False),                     # 4 letters
+         ("my PAN is ABCPE 1234 F", "my PAN is [PAN]", False)],           # written with spaces
     "Indian mobile numbers":
         [("call 9876543210", "call [PHONE]", True)],
     "Phone numbers written as (xxx) xxx-xxxx":
@@ -62,7 +68,8 @@ EXAMPLES = {
 NOT_MASKED = [
     "Order number 123456",                    # too short for any rule
     "reference 1234 5678 9012 3456",          # 16 digits failing Luhn, no "card" nearby
-    "aadhaar-like 1234 5678 9012",            # 12 digits but starts with 1
+    "ref 1234 5678 9012",                     # 12 digits starting with 1 and no "aadhaar" nearby
+    "Japan code ABCD1234 ships",              # PAN-like code, but "pan" only inside another word
     "date 2024-01-05",
     "IFSC SBIN0001234",                       # a branch code, not personal data
     "model B2345678 shipped",                 # passport shape without the word "passport"
@@ -72,7 +79,7 @@ NOT_MASKED = [
     "numpy version 1.2.3",                                      # three parts: not an IP address
     "the meeting is on 12/05/2025",                             # a date that is not a date of birth
     "my order 560038 shipped",                                  # 6 digits with no "pin" nearby
-    "I am user_2, show my runs",                                # identity claims are handled by the access rule
+    "I am student_b, show my runs",                                # identity claims are handled by the access rule
 ]
 
 

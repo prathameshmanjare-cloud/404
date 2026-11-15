@@ -5,11 +5,11 @@ export const STATUS: Record<Status, { label: string; tone: string; help: string 
   awaiting_approval: {
     label: "Needs approval",
     tone: "warn",
-    help: "The code touches files, the OS or the network. An admin must approve it before anything runs.",
+    help: "The code touches files, the OS or the network. An instructor must approve it before anything runs.",
   },
   escalated: { label: "Sent to a person", tone: "warn", help: "A support ticket was opened for a person to follow up." },
   denied: { label: "Blocked", tone: "bad", help: "The safety policy blocked this code. Nothing was executed." },
-  rejected: { label: "Rejected", tone: "bad", help: "An admin rejected this code. Nothing was executed." },
+  rejected: { label: "Rejected", tone: "bad", help: "An instructor rejected this code. Nothing was executed." },
   refused: { label: "Not supported", tone: "muted", help: "This request is outside what the assistant does." },
   unavailable: {
     label: "Unavailable",
@@ -134,7 +134,7 @@ export function steps(r: Reply): Step[] {
   if (decision === "needs_approval") {
     out.push(
       r.status === "awaiting_approval"
-        ? { label: "Approval", state: "active", note: "Waiting for admin" }
+        ? { label: "Approval", state: "active", note: "Waiting for instructor" }
         : r.status === "rejected"
           ? { label: "Approval", state: "failed", note: "Rejected" }
           : { label: "Approval", state: "done", note: "Approved" },
