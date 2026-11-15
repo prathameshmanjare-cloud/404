@@ -1,6 +1,8 @@
 // One typed fetch wrapper per endpoint. Components never call fetch directly.
 // Only VITE_BACKEND_URL is read here; no key ever goes in a frontend file.
-import type { Controls, ExecuteResult, GateResult, Health, Reply, RunRecord, User } from "./types";
+import type {
+  Controls, ExecuteResult, GateResult, Health, Reply, RunRecord, TicketList, TicketRecord, User,
+} from "./types";
 
 const BASE = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -58,6 +60,13 @@ export const api = {
   // History: the server returns only the signed-in caller's runs (every run for an admin).
   runs: () => request<RunRecord[]>("/runs"),
   gate: () => request<GateResult>("/gate", { method: "POST" }),
+  // Admins only: the server refuses everyone else.
+  tickets: (status: "all" | "open" | "closed" = "all") => request<TicketList>(`/tickets?status=${status}`),
+  setTicketStatus: (ticket_id: string, status: "open" | "closed") =>
+    request<TicketRecord>(`/tickets/${encodeURIComponent(ticket_id)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
   feedback: (thread_id: string, text: string) =>
     request<{ saved: boolean }>("/feedback", { method: "POST", body: JSON.stringify({ thread_id, text }) }),
 };

@@ -59,7 +59,9 @@ export interface Step {
 export const PII_LABEL: Record<string, string> = {
   PAN: "PAN", AADHAAR: "Aadhaar number", CARD: "Card number", PHONE: "Phone number", EMAIL: "Email address",
   UPI: "UPI ID", GSTIN: "GSTIN", SECRET: "API key or token", ACCOUNT: "Bank account number",
-  PASSPORT: "Passport number", VOTER_ID: "Voter ID", DL: "Driving licence number",
+  PASSPORT: "Passport number", VOTER_ID: "Voter ID", DL: "Driving licence number", NAME: "Name",
+  ADDRESS: "Postal address", DOB: "Date of birth", SSN: "US Social Security number", IP_ADDRESS: "IP address",
+  PINCODE: "PIN code",
 };
 
 export const LANGUAGE = {
@@ -84,6 +86,12 @@ export function steps(r: Reply): Step[] {
   const isSql = !!r.sql || r.status === "sql";
   if (r.status === "access_denied") {
     return [{ label: "Identity check", state: "failed", note: "Other users' data is off limits" }];
+  }
+  if (r.status === "denied" && !r.code) {
+    return [
+      { label: "Understand", state: "done", note: "Code request" },
+      { label: "Safety check", state: "failed", note: "Blocked before any code was written" },
+    ];
   }
   if (r.status === "escalated") {
     return [

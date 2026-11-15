@@ -103,6 +103,7 @@ def test_idempotency_key():
     "getattr(__builtins__, 'eval')",
     "().__class__.__bases__[0].__subclasses__()",
     "def broken(:",
+    "import os\nprint(os.getcwd())",
 ])
 def test_policy_denies(code):
     assert evaluate_code_policy(code).decision == "deny"
@@ -114,7 +115,6 @@ def test_policy_denies(code):
     "import requests",
     "import numpy",
     "from pathlib import Path\nPath('a').read_text()",
-    "import os\nprint(os.getcwd())",
 ])
 def test_policy_needs_approval(code):
     assert evaluate_code_policy(code).decision == "needs_approval"

@@ -12,6 +12,21 @@ EXAMPLES = {
          ("aws AKIAIOSFODNN7EXAMPLE", "aws [SECRET]", None)],
     "Email addresses":
         [("mail priya.sharma@example.com now", "mail [EMAIL] now", True)],
+    "Personal names":
+        [("Hi, my name is Rahul Sharma and I need help", "Hi, my name is [NAME] and I need help", None),
+         ("name: Priya Kumar", "name: [NAME]", None)],
+    "Postal addresses":
+        [("My address is 12 MG Road, Bangalore 560038. Help me", "My address is [ADDRESS]. Help me", None),
+         ("I live at 221B Baker Street; thanks", "I live at [ADDRESS]; thanks", None)],
+    "Dates of birth":
+        [("my DOB is 12/05/1990", "my DOB is [DOB]", None),
+         ("born on 3 March 1991", "born on [DOB]", None)],
+    "US Social Security numbers":
+        [("ssn 123-45-6789", "ssn [SSN]", None)],
+    "IP addresses":
+        [("server 192.168.1.10 is down", "server [IP_ADDRESS] is down", None)],
+    "Postal PIN codes":
+        [("pin code 560038", "pin code [PINCODE]", None)],
     "UPI payment IDs":
         [("pay rahul.k@okaxis", "pay [UPI]", True)],
     "GST identification numbers":
@@ -53,6 +68,11 @@ NOT_MASKED = [
     "model B2345678 shipped",                 # passport shape without the word "passport"
     "id 123456789012345678901",               # 21 digits: no rule matches the whole run
     "x = 10 and y = 9876",
+    "Write a function that takes a name: str and returns it",   # a type annotation, not a name
+    "numpy version 1.2.3",                                      # three parts: not an IP address
+    "the meeting is on 12/05/2025",                             # a date that is not a date of birth
+    "my order 560038 shipped",                                  # 6 digits with no "pin" nearby
+    "I am user_2, show my runs",                                # identity claims are handled by the access rule
 ]
 
 

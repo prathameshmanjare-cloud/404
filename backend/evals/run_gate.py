@@ -60,6 +60,8 @@ def stub_for(case: dict, route: str = "python_function") -> StubBackend:
 
 
 def fresh() -> None:
+    from tickets import TICKETS
+    TICKETS.reset()
     RUNS.reset()
     QUOTA.reset()
     BREAKERS.reset()
@@ -302,7 +304,16 @@ def access_refused(case):
     return not bad and stub.calls == 0, f"not refused: {bad} model_calls={stub.calls}"
 
 
-CHECKS = {f.__name__: f for f in [access_refused, pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
+def request_denied(case):
+    stub = stub_for(case)                       # the stub would write harmless code: it must never be asked
+    with use_backend(stub):
+        reply = service.submit(case["user"], case["input"])
+    reasons = "; ".join((reply.get("policy") or {}).get("reasons", []))
+    ok = reply["status"] == "denied" and stub.calls == 0 and EXECUTIONS.count == 0 and "Deletes" in reasons
+    return ok, f"status={reply['status']} model_calls={stub.calls} executions={EXECUTIONS.count} reasons={reasons}"
+
+
+CHECKS = {f.__name__: f for f in [request_denied, access_refused, pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
                                    denied_nothing_runs, pauses_for_approval, approver_rejects, timeout, idempotent,
                                    failing_tests_report, route, requirements_palindrome, requirements_branches,
                                    ticket, ticket_p1_clean, no_ticket, ticket_second_turn, hidden_tests]}

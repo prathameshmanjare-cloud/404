@@ -107,6 +107,7 @@ class RedactionRule:
     description: str
     check: Check | None = None
     needs_words: tuple[str, ...] = ()   # one of these must appear in the 40 characters before the match
+    group: int = 0                      # mask only this capture group ("my name is <Rahul Sharma>")
 
     @property
     def placeholder(self) -> str:
@@ -168,6 +169,41 @@ RULES: tuple[RedactionRule, ...] = (
         re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"),
         "Email addresses", _fixed("the email address has a valid format")),
     RedactionRule(
+        "NAME",
+        # A person's name after "my name is" / "name:" (1-3 words); the phrase itself stays
+        re.compile(r"\b(?:my\s+(?:full\s+)?name\s+is|my\s+name's|(?:full\s+)?name\s*[:=])\s+"
+                   # not a type annotation ("name: str") or a placeholder word
+                   r"(?!(?:str|string|int|integer|float|bool|boolean|list|dict|tuple|set|any|none|optional|text|"
+                   r"varchar|char|number|object|bytes|self)\b)"
+                   r"([A-Za-z][A-Za-z.'\-]+(?:\s+(?!(?:and|i|my|is|from|with|but|so|please|age|aged)\b)"
+                   r"[A-Za-z][A-Za-z.'\-]+){0,2})", re.I),
+        "Personal names", _fixed("a person's name", None), group=1),
+    RedactionRule(
+        "ADDRESS",
+        # A postal address after "my address is" / "address:" / "I live at", up to the end of the sentence
+        re.compile(r"\b(?:my\s+(?:home\s+|postal\s+)?address\s+is|(?:home\s+|postal\s+)?address\s*[:=]|"
+                   r"i\s+live\s+at|i\s+stay\s+at|residing\s+at)\s+([^.;!?\n]{4,120})", re.I),
+        "Postal addresses", _fixed("a postal address", None), group=1),
+    RedactionRule(
+        "DOB",
+        # A date of birth after "DOB" / "date of birth" / "born on" / "birthday": 12/05/1990, 1990-05-12, 12 May 1990
+        re.compile(r"\b(?:d\.?o\.?b\.?|date\s+of\s+birth|born(?:\s+on)?|birth\s*day)\b\W{0,4}(?:is\s+)?"
+                   r"(\d{1,2}[/.\- ]\d{1,2}[/.\- ]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|"
+                   r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9},?\s+\d{4}|[A-Za-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
+                   re.I),
+        "Dates of birth", _fixed("a date of birth", None), group=1),
+    RedactionRule(
+        "SSN",
+        # US Social Security number: 123-45-6789
+        re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])"),
+        "US Social Security numbers", _fixed("a US Social Security number", None)),
+    RedactionRule(
+        "IP_ADDRESS",
+        # IPv4 address: 192.168.1.10 (each part 0-255)
+        re.compile(r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+                   r"(?![\d.])"),
+        "IP addresses", _fixed("an IP address", None)),
+    RedactionRule(
         "UPI",
         # name@bank with no dot after the @ (an email has a domain with a dot)
         re.compile(r"(?<![\w.@])[A-Za-z0-9.\-_]{2,}@[A-Za-z]{2,20}(?![\w.@])"),
@@ -210,6 +246,12 @@ RULES: tuple[RedactionRule, ...] = (
         re.compile(DIGITS(9, 18)),
         "Bank account numbers", _fixed("a bank account number (it has no public checksum to verify)", None),
         needs_words=("account", "a/c", "acct", "acc no", "acc. no")),
+    RedactionRule(
+        "PINCODE",
+        # Indian PIN code: 6 digits starting 1-9, only with "pin" / "pincode" / "postal" / "zip" nearby
+        re.compile(DIGITS(6, 6, first="[1-9]")),
+        "Postal PIN codes", _fixed("a postal PIN code", None),
+        needs_words=("pin", "pincode", "pin code", "postal", "zip")),
     RedactionRule(
         "CARD",
         # Payment card: 13-19 digits; masked when it passes Luhn, or with "card" nearby
@@ -263,12 +305,14 @@ def _matches(text: str) -> list[tuple[int, int, int, RedactionRule, bool | None,
     found = []
     for order, rule in enumerate(RULES):
         for m in rule.pattern.finditer(text):
-            if rule.needs_words and not _words_before(text, m.start(), rule.needs_words):
+            start, end = m.span(rule.group)
+            if rule.needs_words and not _words_before(text, start, rule.needs_words):
                 continue
-            result = rule.check(m.group(0), text, m.start()) if rule.check else (None, rule.description)
+            value = m.group(rule.group)
+            result = rule.check(value, text, start) if rule.check else (None, rule.description)
             if result is None:
                 continue
-            found.append((m.start(), m.end(), order, rule, *result))
+            found.append((start, end, order, rule, *result))
     return found
 
 

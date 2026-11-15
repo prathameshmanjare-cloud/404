@@ -16,7 +16,9 @@ def fresh_state():
     from runs import RUNS
     from sandbox import EXECUTIONS
     from guard.session import SESSIONS
+    from tickets import TICKETS
     SESSIONS.reset()
+    TICKETS.reset()
     RUNS.reset()
     QUOTA.reset()
     BREAKERS.reset()

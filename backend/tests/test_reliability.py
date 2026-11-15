@@ -133,3 +133,20 @@ def test_long_retry_after_moves_to_fallback_without_waiting():
     with use_backend(backend):
         reply = call_model("router", [{"role": "user", "content": "x"}], sleep=sleeps.append)
     assert reply.tier == "fallback" and backend.seen.count(ROUTER_PRIMARY) == 1 and sleeps == []
+
+
+def test_replay_follows_the_fallback_model_and_never_trips_the_breaker(tmp_path):
+    from llm.backends import ReplayBackend, cassette_key
+    from llm.errors import CassetteMissing
+    from llm.reliability import BREAKERS
+    import json as _json
+    msgs = [{"role": "user", "content": "x"}]
+    # Recorded while the primary was rate-limited: only the fallback model's answer exists.
+    (tmp_path / f"{cassette_key(ROUTER_FALLBACK, msgs)}.json").write_text(_json.dumps({"response": '{"route": "sql"}'}))
+    with use_backend(ReplayBackend(tmp_path)):
+        for _ in range(5):
+            reply = call_model("router", msgs, sleep=lambda s: None)
+            assert reply.model == ROUTER_FALLBACK
+        assert BREAKERS.get(ROUTER_PRIMARY, 3, 15).state == "closed"
+        with pytest.raises(CassetteMissing):                       # nothing recorded at all
+            call_model("router", [{"role": "user", "content": "never recorded"}], sleep=lambda s: None)

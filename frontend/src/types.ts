@@ -133,3 +133,28 @@ export interface GateResult {
   failing: string[];
   cases: GateCase[];
 }
+
+// A ticket as the admin's Tickets page shows it (all text already masked by the backend).
+export interface TicketRecord {
+  ticket_id: string;
+  run_id: string | null;
+  user_id: string;
+  priority: "P1" | "P2" | "P3";
+  sla_hours: number;
+  reason: string;
+  handoff_note: string;
+  request: string;
+  status: "open" | "closed";
+  created: number;       // seconds since epoch
+  due: number;
+  closed_at: number | null;
+  closed_by: string | null;
+  age_minutes: number;   // open: waiting so far; closed: time taken to close
+  minutes_left: number | null;
+  within_sla: boolean;
+}
+
+export interface TicketList {
+  tickets: TicketRecord[];
+  counts: { open: number; closed: number };
+}

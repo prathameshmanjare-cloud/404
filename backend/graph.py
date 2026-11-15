@@ -33,6 +33,7 @@ from triage import triage_request
 
 log = logging.getLogger("codesmith.graph")
 CHECK_WORDS = re.compile(r"\b(valid|invalid|correct|wrong|right|check|verify|genuine|real|fake|format)\b", re.I)
+NETWORK_BLOCKED = "network access is disabled in the sandbox"
 TIER_RANK = {"primary": 0, "fallback": 1, "template": 2, "none": 3}
 
 
@@ -120,7 +121,9 @@ def policy_node(state: CodeSmithState) -> dict:
     decision = min(code_p.decision, tests_p.decision, key=order.get)
     reasons = list(code_p.reasons) if code_p.decision == decision or decision == "allow" else []
     if tests_p.decision != "allow":
-        reasons += [f"tests: {r}" for r in tests_p.reasons]
+        # "File access: calls open" -> "File access (in the tests): calls open"
+        reasons += [r.replace(": ", " (in the tests): ", 1) if ": " in r else f"In the tests: {r}"
+                    for r in tests_p.reasons]
     policy = PolicyResult(decision=decision, reasons=reasons)
     out: dict = {"policy": policy.model_dump()}
     if decision == "deny":
@@ -184,8 +187,8 @@ def sql_node(state: CodeSmithState) -> dict:
 
 def refuse_node(state: CodeSmithState) -> dict:
     return {"status": "refused", "notes": state.get("notes", []) + [
-        "I can't help with that request. If it was about another user's data or a different role: you can "
-        "only see your own requests, and who you are comes from your sign-in, not from the message."]}
+        "CodeSmith can't help with this request. It writes Python or JavaScript functions, read-only SQL "
+        "queries, and answers questions. Requests to change your role or reach other users' data are refused."]}
 
 
 def general_node(state: CodeSmithState) -> dict:
@@ -263,6 +266,8 @@ def after_run(state: CodeSmithState) -> str:
     limit = get_config()["escalation"]["max_failed_repairs"]
     if run.get("exit_code") == 0 or run.get("timed_out") or state.get("tier") == "template":
         return "post_run"
+    if NETWORK_BLOCKED in (run.get("output") or ""):
+        return "post_run"   # the sandbox has no network by design: rewriting the code cannot fix that
     if state.get("attempts", 0) < limit and state.get("requirements"):
         return "repair"
     return "post_run"

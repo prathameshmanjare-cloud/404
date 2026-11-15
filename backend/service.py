@@ -14,11 +14,13 @@ from guard.identity import UnknownUser, can_approve, get_identity
 from guard.mask import MaskingFilter, find_pii, mask, mask_obj
 from guard.quota import QUOTA, check_quota
 from guard.session import acting_as
-from policy import evaluate_code_policy
+from escalation import should_escalate
+from policy import check_request_intent, evaluate_code_policy
+from tickets import TICKETS, TicketNotFound, build_ticket
 from policy_js import evaluate_js_policy
 from runs import RUNS, NotFound
 from sandbox import run_js_snippet, run_snippet
-from state import Controls, PolicyResult
+from state import Controls, PolicyResult, Triage
 
 log = logging.getLogger("codesmith.service")
 
@@ -57,16 +59,41 @@ def quota_message(cfg: dict, identity) -> dict:
     }
 
 
+def _denied_request(cfg: dict, identity, request: str, pii: list, intent) -> dict:
+    """A destructive request: refused by the policy before any code exists. Counts as a policy denial (R3)."""
+    session = RUNS.session(identity.user_id)
+    session.denials += 1
+    ticket = None
+    escalate, why = should_escalate(Triage(), session, cfg["escalation"])
+    if escalate:
+        ticket = build_ticket(identity.user_id, request, why, None, {}, cfg["tickets"]["sla_hours"]).model_dump()
+        session.ticket_opened()
+    report = ("Policy: deny - " + "; ".join(intent.reasons) + ".\n"
+              "Refused before any code was written. Nothing was generated or executed.\n"
+              "Served by: no model (rules in code only).")
+    return {"status": "denied", "tier": "none", "request": request, "pii": pii, "route": "python_function",
+            "policy": intent.model_dump(), "ticket": ticket, "report": report}
+
+
+# Text fields of a stored reply that can carry what the user typed. They are masked again on every read,
+# so a rule added later (names, addresses, ...) also covers history saved before it existed.
+_USER_TEXT_FIELDS = ("request", "report", "answer", "ticket", "triage", "denial")
+
+
+def _remask(reply: dict) -> dict:
+    return {k: (mask_obj(v) if k in _USER_TEXT_FIELDS else v) for k, v in (reply or {}).items()}
+
+
 def list_my_runs() -> list[dict]:
     """The signed-in caller's past runs. Takes no user argument: identity comes from the session."""
-    return [{"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": r.result}
+    return [{"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": _remask(r.result)}
             for r in RUNS.list_runs() if r.result]
 
 
 def get_my_run(run_id: str) -> dict:
     """One past run of the signed-in caller; "missing" and "not yours" raise the same NotFound."""
     r = RUNS.get_run(run_id)
-    return {"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": r.result}
+    return {"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": _remask(r.result)}
 
 
 class ServiceError(Exception):
@@ -102,6 +129,8 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
                                 state.get("language", "python")),
         "run": {k: run.get(k) for k in ("exit_code", "timed_out", "output", "sandbox", "cached")} if run else None,
     }
+    if out.get("ticket"):
+        TICKETS.save(mask_obj(out["ticket"]), thread_id)     # every ticket is kept for the admin's Tickets page
     # Final pass: nothing unmasked leaves the backend, even text a model echoed back.
     for key in ("report", "ticket", "triage", "answer"):
         out[key] = mask_obj(out[key])
@@ -141,6 +170,12 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
         return _reply(thread_id, {"status": "access_denied", "tier": "none", "request": request, "pii": pii,
                                   "denial": refusal(identity, denial),
                                   "report": refusal_message(identity, denial)}, False)
+    # Rule in code, before any model call: a request whose goal is destructive is denied outright.
+    intent = check_request_intent(request)
+    if intent.decision == "deny":
+        log.warning("request denied by policy user=%s reasons=%s", identity.user_id, intent.reasons)
+        RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
+        return _reply(thread_id, _denied_request(cfg, identity, request, pii, intent), False)
     if not check_quota(cfg, identity):
         log.warning("quota reached user=%s", identity.user_id)
         RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
@@ -163,7 +198,8 @@ def resume(thread_id: str, user_id: str, decision: str) -> dict:
     if decision not in {"approve", "reject"}:
         raise ServiceError("decision must be approve or reject")
     if not can_approve(cfg, approver):
-        raise ServiceError(f"role {approver.role} cannot approve or reject code", 403)
+        raise ServiceError(f"Only an admin can approve or reject code. You are signed in as {approver.name} "
+                           f"({approver.user_id}), a {approver.role} account.", 403)
     snapshot = GRAPH.get_state({"configurable": {"thread_id": thread_id}})
     if not snapshot or not snapshot.next or "approval" not in snapshot.next:
         raise ServiceError("unknown thread or nothing waiting for approval (a restart forgets paused runs; "
@@ -220,3 +256,27 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
     result = runner(code, snippet, sb["timeout_s"], sb["max_output_chars"])
     return {"thread_id": thread_id, "exit_code": result.exit_code, "timed_out": result.timed_out,
             "output": mask(result.output), "sandbox": result.sandbox, "policy": snippet_policy.model_dump()}
+
+
+# ---------------------------------------------------------------- tickets (admins only)
+def _require_admin(identity, what: str) -> None:
+    if not can_approve(get_config(), identity):
+        raise ServiceError(f"Only an admin can {what}. You are signed in as {identity.name} ({identity.user_id}), "
+                           f"a {identity.role} account.", 403)
+
+
+def list_tickets(identity, status: str = "all") -> dict:
+    _require_admin(identity, "view tickets")
+    return {"tickets": TICKETS.list(status), "counts": TICKETS.counts()}
+
+
+def set_ticket_status(identity, ticket_id: str, status: str) -> dict:
+    _require_admin(identity, "change a ticket's status")
+    if status not in TICKETS.STATUSES:
+        raise ServiceError("Status must be open or closed.")
+    try:
+        ticket = TICKETS.set_status(ticket_id, status, identity.user_id)
+    except TicketNotFound as exc:
+        raise ServiceError(str(exc), 404) from exc
+    log.info("ticket %s set to %s by %s", ticket_id, status, identity.user_id)
+    return ticket

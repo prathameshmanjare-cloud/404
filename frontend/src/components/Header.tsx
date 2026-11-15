@@ -1,7 +1,7 @@
 import type { Controls, Health, User } from "../types";
 import Logo from "./Logo";
 
-export type Page = "assistant" | "quality";
+export type Page = "assistant" | "quality" | "tickets";
 
 interface Props {
   page: Page;
@@ -13,6 +13,8 @@ interface Props {
   controls: Controls;
   busy?: boolean;
   offline?: boolean;
+  isAdmin?: boolean;
+  openTickets?: number;
 }
 
 function connection(health: Health | null, offline?: boolean): { label: string; tone: string } {
@@ -23,7 +25,8 @@ function connection(health: Health | null, offline?: boolean): { label: string; 
   return { label: "Connected · live models", tone: "ok" };
 }
 
-export default function Header({ page, onPage, users, userId, onUser, health, controls, busy, offline }: Props) {
+export default function Header({ page, onPage, users, userId, onUser, health, controls, busy, offline, isAdmin,
+                                 openTickets }: Props) {
   const conn = connection(health, offline);
   const sims = [controls.chaos && "Chaos 60%", controls.outage && "Outage", controls.replay && "Replay"].filter(Boolean);
   return (
@@ -44,6 +47,11 @@ export default function Header({ page, onPage, users, userId, onUser, health, co
         <button className={page === "quality" ? "active" : ""} onClick={() => onPage("quality")}>
           Quality &amp; reliability
         </button>
+        {isAdmin && (
+          <button className={page === "tickets" ? "active" : ""} onClick={() => onPage("tickets")}>
+            Tickets{openTickets ? <span className="nav-count" title="Open tickets">{openTickets}</span> : null}
+          </button>
+        )}
       </nav>
       <div className="header-right">
         {sims.length > 0 && <span className="pill warn" title="Simulation switches are on">{sims.join(" · ")}</span>}

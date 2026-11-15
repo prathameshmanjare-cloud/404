@@ -131,7 +131,9 @@ def write_tests(req: Requirements, controls: dict, language: str = "python") -> 
 PII_LABEL = {"PAN": "PAN", "AADHAAR": "Aadhaar number", "CARD": "card number", "PHONE": "phone number",
              "EMAIL": "email address", "UPI": "UPI ID", "GSTIN": "GSTIN", "SECRET": "API key or token",
              "ACCOUNT": "bank account number", "PASSPORT": "passport number", "VOTER_ID": "voter ID",
-             "DL": "driving licence number"}
+             "DL": "driving licence number", "NAME": "name", "ADDRESS": "postal address",
+             "DOB": "date of birth", "SSN": "US Social Security number", "IP_ADDRESS": "IP address",
+             "PINCODE": "PIN code"}
 
 
 class AnswerOut(BaseModel):

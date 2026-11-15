@@ -53,6 +53,9 @@ def render_report(state: dict) -> str:
                 lines.append("Tests passed (pytest exit code 0).")
             else:
                 lines.append(f"Tests failed (pytest exit code {run.get('exit_code')}).")
+                if "network access is disabled in the sandbox" in (run.get("output") or ""):
+                    lines.append("The code tried to use the network, which the sandbox always blocks, so its tests "
+                                 "cannot pass here. Nothing was sent over the network.")
             if state.get("attempts"):
                 lines.append(f"Repair attempts: {state.get('attempts')}.")
             if run.get("cached"):

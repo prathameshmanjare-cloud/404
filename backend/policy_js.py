@@ -1,5 +1,12 @@
 """evaluate_js_policy (R2 for JavaScript): a static scan, never executes. Deny wins over approval.
 
+Same categories and wording as the Python policy (policy.py):
+DENY:           operating-system access (child_process, os, vm, worker_threads, ...), deleting files
+                (fs.unlink / rm / rmdir, sync and async), dangerous shell text ("sudo", "rm -rf", ...),
+                dynamic code (eval, new Function, dynamic import), sandbox escapes (process.env, constructor
+                chains, computed require, ...)
+NEEDS APPROVAL: file access (fs, readline), network access (http, https, net, fetch, WebSocket, and any
+                http:// or https:// address), unknown modules
 Like the Python policy this is a policy layer, not a security boundary. The JavaScript sandbox adds
 Node's permission model (no child processes, files only inside the run folder) and blocks the network.
 """
@@ -7,32 +14,42 @@ from __future__ import annotations
 
 import re
 
+from policy import DANGEROUS_SHELL, URL_IN_TEXT
 from state import PolicyResult
 
 SAFE_MODULES = {"assert", "assert/strict", "test", "util", "events", "string_decoder", "url", "querystring",
                 "buffer", "path", "crypto", "timers", "timers/promises", "stream", "zlib", "perf_hooks"}
-APPROVAL_MODULES = {"fs", "fs/promises", "net", "http", "https", "http2", "dgram", "dns", "dns/promises",
-                    "tls", "os", "readline", "readline/promises"}
-DENY_MODULES = {"child_process", "vm", "worker_threads", "cluster", "v8", "inspector", "module", "process",
-                "repl", "wasi", "trace_events"}
+FILE_MODULES = {"fs", "fs/promises", "readline", "readline/promises"}
+NETWORK_MODULES = {"net", "http", "https", "http2", "dgram", "dns", "dns/promises", "tls"}
+DENY_MODULES = {"child_process": "runs other programs", "os": "operating-system access", "vm": "runs code dynamically",
+                "worker_threads": "starts threads with their own code", "cluster": "starts processes",
+                "v8": "engine internals", "inspector": "engine internals", "module": "the module loader",
+                "process": "process control", "repl": "runs code dynamically", "wasi": "system interface",
+                "trace_events": "engine internals"}
 
 DENY_PATTERNS = [
-    (re.compile(r"\beval\s*\("), "calls eval"),
-    (re.compile(r"\bnew\s+Function\b|(?<![\w.])Function\s*\("), "builds code with Function"),
-    (re.compile(r"(?<![\w.])import\s*\("), "uses dynamic import()"),
+    (re.compile(r"\b(?:unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync|truncate|truncateSync|chmod|chmodSync|"
+                r"chown|chownSync)\s*\("), "Deletes or damages files: calls an fs delete or permission function"),
+    (re.compile(r"\beval\s*\("), "Dynamic code: calls eval()"),
+    (re.compile(r"\bnew\s+Function\b|(?<![\w.])Function\s*\("), "Dynamic code: builds code with Function"),
+    (re.compile(r"(?<![\w.])import\s*\("), "Dynamic code: uses dynamic import()"),
     (re.compile(r"\bprocess\s*\.\s*(binding|_linkedBinding|dlopen|env|exit|kill|chdir|setuid|setgid|mainModule|"
-                r"reallyExit|abort)\b"), "uses a dangerous process API"),
-    (re.compile(r"\bprocess\s*\["), "indexes into process"),
-    (re.compile(r"\bconstructor\s*\.\s*constructor\b|\[\s*['\"]constructor['\"]\s*\]"), "reaches the Function constructor"),
-    (re.compile(r"__proto__|Object\s*\.\s*setPrototypeOf\s*\(\s*(globalThis|global)\b"), "changes prototypes of globals"),
-    (re.compile(r"\b(globalThis|global)\s*\["), "indexes into the global object"),
-    (re.compile(r"\brequire\s*\(\s*[^'\"`\s)]"), "requires a module by a computed name"),
-    (re.compile(r"\brequire\s*\.\s*(cache|resolve|main)\b|\bmodule\s*\.\s*constructor\b"), "touches the module loader"),
+                r"reallyExit|abort)\b"), "Sandbox escape: uses a dangerous process API"),
+    (re.compile(r"\bprocess\s*\["), "Sandbox escape: indexes into process"),
+    (re.compile(r"\bconstructor\s*\.\s*constructor\b|\[\s*['\"]constructor['\"]\s*\]"),
+     "Sandbox escape: reaches the Function constructor"),
+    (re.compile(r"__proto__|Object\s*\.\s*setPrototypeOf\s*\(\s*(globalThis|global)\b"),
+     "Sandbox escape: changes prototypes of globals"),
+    (re.compile(r"\b(globalThis|global)\s*\["), "Sandbox escape: indexes into the global object"),
+    (re.compile(r"\brequire\s*\(\s*[^'\"`\s)]"), "Sandbox escape: requires a module by a computed name"),
+    (re.compile(r"\brequire\s*\.\s*(cache|resolve|main)\b|\bmodule\s*\.\s*constructor\b"),
+     "Sandbox escape: touches the module loader"),
 ]
 APPROVAL_PATTERNS = [
-    (re.compile(r"\bfetch\s*\("), "calls fetch (network access)"),
-    (re.compile(r"\b(XMLHttpRequest|WebSocket|EventSource)\b"), "uses a network API"),
+    (re.compile(r"\bfetch\s*\("), "Network access: calls fetch"),
+    (re.compile(r"\b(XMLHttpRequest|WebSocket|EventSource)\b"), "Network access: uses a browser network API"),
 ]
+STRING_RE = re.compile(r"""(['"`])((?:\\.|(?!\1).)*)\1""", re.S)
 MODULE_RE = re.compile(r"""\brequire\s*\(\s*['"`]([^'"`]+)['"`]\s*\)|\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]""")
 
 
@@ -83,19 +100,29 @@ def evaluate_js_policy(code: str) -> PolicyResult:
         base = name[5:] if name.startswith("node:") else name
         if base.startswith((".", "/")):
             if base.lstrip("./").removesuffix(".js") != "solution":
-                approve.append(f"loads local file {name}")
+                approve.append(f"File access: loads local file {name}")
         elif base in DENY_MODULES:
-            deny.append(f"requires {name}")
-        elif base in APPROVAL_MODULES:
-            approve.append(f"requires {name} (file, OS or network access)")
+            deny.append(f"Operating-system access: requires {name} ({DENY_MODULES[base]})")
+        elif base in FILE_MODULES:
+            approve.append(f"File access: requires {name}")
+        elif base in NETWORK_MODULES:
+            approve.append(f"Network access: requires {name}")
         elif base not in SAFE_MODULES:
-            approve.append(f"requires unknown module {name}")
+            approve.append(f"Unknown module: requires {name} (not on the safe list)")
     for rx, why in DENY_PATTERNS:
         if rx.search(code_only):
             deny.append(why)
     for rx, why in APPROVAL_PATTERNS:
         if rx.search(code_only):
             approve.append(why)
+    for m in STRING_RE.finditer(src):                 # text inside strings: shell commands and web addresses
+        text = m.group(2)
+        shell = DANGEROUS_SHELL.search(text)
+        if shell:
+            deny.append(f"Dangerous shell command: the code contains \"{shell.group(0).strip(' ;&|`$(')}\"")
+        url = URL_IN_TEXT.search(text)
+        if url:
+            approve.append(f"Network access: contains the web address {url.group(0)[:60]}")
     if deny:
         return PolicyResult(decision="deny", reasons=sorted(set(deny)))
     if approve:

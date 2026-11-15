@@ -1,5 +1,5 @@
 """FastAPI app. Sign in with POST /session, then send the token as X-Session-Token on every call.
-Endpoints: /health /users /session /me /submit /resume /execute /runs /feedback /gate.
+Endpoints: /health /users /session /me /submit /resume /execute /runs /tickets /feedback /gate.
 Run with one worker and no --reload (paused approvals and sessions live in memory)."""
 from __future__ import annotations
 
@@ -162,6 +162,22 @@ def list_runs(ident: Identity = Depends(session_identity)) -> list[dict]:
     """The caller's own runs, newest first (an admin sees every run). The UI history comes from here."""
     with acting_as(ident):
         return service.list_my_runs()
+
+
+class TicketStatusIn(BaseModel):
+    status: str
+
+
+@app.get("/tickets")
+def tickets(status: str = "all", ident: Identity = Depends(session_identity)) -> dict:
+    """Every ticket with priority, response time and status. Admins only."""
+    return _call(service.list_tickets, ident, status)
+
+
+@app.post("/tickets/{ticket_id}/status")
+def ticket_status(ticket_id: str, body: TicketStatusIn, ident: Identity = Depends(session_identity)) -> dict:
+    """Close or reopen a ticket. Admins only."""
+    return _call(service.set_ticket_status, ident, ticket_id, body.status)
 
 
 @app.post("/feedback")

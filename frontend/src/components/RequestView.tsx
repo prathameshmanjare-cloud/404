@@ -8,6 +8,22 @@ import type { PiiFinding } from "../types";
 
 type Tab = "answer" | "overview" | "code" | "tests" | "run" | "results" | "ticket";
 
+// Policy reasons read "Category: detail" ("Deletes or damages files: calls shutil.rmtree").
+function ReasonList({ reasons }: { reasons: string[] }) {
+  return (
+    <ul className="reasons">
+      {reasons.map((reason, i) => {
+        const cut = reason.indexOf(": ");
+        return cut > 0 ? (
+          <li key={i}><strong>{reason.slice(0, cut)}</strong>: {reason.slice(cut + 2)}</li>
+        ) : (
+          <li key={i}>{reason}</li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function PrivacyCard({ pii }: { pii: PiiFinding[] }) {
   if (!pii.length) return null;
   return (
@@ -115,8 +131,8 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
         <section className="callout warn">
           <div>
             <h3>Approval needed before this code can run</h3>
-            <p>The safety check found file, OS or network access. Review the code in the Code tab.</p>
-            <ul>{(r.policy?.reasons ?? []).map((x, i) => <li key={i}>{x}</li>)}</ul>
+            <p>The safety check found file or network access. Review the code in the Code tab.</p>
+            <ReasonList reasons={r.policy?.reasons ?? []} />
             {role !== "admin" && <p className="muted small">Only an admin can decide. Switch “Signed in as” to Admin.</p>}
           </div>
           <div className="callout-actions">
@@ -132,8 +148,15 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
       {r.status !== "done" && r.status !== "awaiting_approval" && r.status !== "sql" && r.status !== "answered" && (
         <section className={`callout ${s.tone}`}>
           <div>
-            <h3>{s.label}</h3>
+            <h3>{r.status === "denied" ? "Blocked by the safety policy" : s.label}</h3>
             <p>{r.status === "access_denied" && r.report ? r.report : s.help}</p>
+            {r.status === "denied" && <ReasonList reasons={r.policy?.reasons ?? []} />}
+            {r.status === "denied" && (
+              <p className="muted small">
+                Code that touches the operating system, deletes files, runs shell commands such as sudo, or runs
+                code dynamically is refused automatically. File and network access can be approved by an admin.
+              </p>
+            )}
           </div>
         </section>
       )}
@@ -167,7 +190,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
                     <dt>Safety check</dt>
                     <dd>
                       <strong>{{ allow: "Passed", needs_approval: "Needs approval", deny: "Blocked" }[r.policy.decision]}</strong>
-                      <ul>{r.policy.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul>
+                      <ReasonList reasons={r.policy.reasons} />
                     </dd>
                   </div>
                 )}

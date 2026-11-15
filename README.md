@@ -62,6 +62,21 @@ a ticket. It never auto-approves code.
 * **Every log line is masked.** That includes the web server's own (uvicorn) handlers, not just the app's.
 * Golden cases H1, H2, H3, H17 and H18 and `tests/test_r1.py` (one test per R1 pass condition) guard this.
 
+## Tickets (admins only)
+
+Signed in as **Admin**, a **Tickets** page appears in the header, with a count of open tickets. Regular users
+never see it, and the API refuses them: "Only an admin can view tickets."
+
+* Every ticket appears: one per escalation (asked for a person, angry, repeated policy denials, failed repairs).
+  Tickets are stored in SQLite separately from the 3-request history, so they never disappear with it.
+* Columns: ticket id, **priority** (P1 / P2 / P3), user, reason, opened, **response time** and **status**.
+  - Open tickets count down to their deadline (`tickets.sla_hours` in `config.yaml`: P1 1 h, P2 4 h, P3 24 h)
+    and turn red when overdue.
+  - Closed tickets show how long they took and whether that was within the deadline.
+* Filters: Open, Closed, All. **Close** and **Reopen** record who closed it and when. Expand a row to read the
+  handoff note and the user's request. Both are masked: no personal data ever appears on this page.
+* API: `GET /tickets?status=open|closed|all`, `POST /tickets/{id}/status` with `{"status": "open"|"closed"}`.
+
 ## Personal data (PII)
 
 `guard/mask.py` finds each value, **checks it in code**, and replaces it with a placeholder before anything else
@@ -82,13 +97,17 @@ list of numbers that must stay unmasked.
 | GSTIN | `[GSTIN]` | Format and check character |
 | Email, UPI ID, phone | `[EMAIL]`, `[UPI]`, `[PHONE]` | Format |
 | Passport, voter ID, driving licence, bank account | `[PASSPORT]`, `[VOTER_ID]`, `[DL]`, `[ACCOUNT]` | Format. Passport, licence and account need a nearby keyword to avoid false matches |
+| Name (after "my name is" / "name:"), postal address (after "my address is" / "I live at"), date of birth (after "DOB" / "born on") | `[NAME]`, `[ADDRESS]`, `[DOB]` | Detected only with those phrases, so a type hint like `name: str` is left alone |
+| PIN code (with "pin" / "zip" nearby), IP address, US SSN | `[PINCODE]`, `[IP_ADDRESS]`, `[SSN]` | Format |
 | API keys and tokens | `[SECRET]` | — |
 
 For "is my PAN correct?", the model gets `[PAN]` and a line such as *"the PAN format is valid; its 4th letter 'P'
 means it belongs to an individual"*. It answers from that, and points to the official portal for confirmation
 that the PAN was actually issued. If the models are down, the same checks are shown as an offline answer.
 The reply lists the findings (type, placeholder, result), never the value. The UI shows them in a privacy card.
-Names and addresses are not detected; that would need a named-entity model.
+Names and addresses written without one of those phrases are not detected; that would need a named-entity
+model. History is masked again whenever it is read, so newer rules also cover requests saved earlier, and the
+"working on your request" card never repeats what you typed.
 
 ## Run locally
 
@@ -152,22 +171,33 @@ appear on the right, as in a Python shell. Leave the box empty to run the code a
 ```bash
 cd backend
 python -m pytest -q tests              # unit tests for every rule
-python -m evals.run_gate --hard-only   # 16 rule cases: no key, no recordings (what CI runs)
-python -m evals.run_gate --record      # with the key: runs all 30 cases live and records the 14 model cases
-python -m evals.run_gate               # replay: all 30 cases from the local recordings, no key needed
+python -m evals.run_gate --hard-only   # 21 rule cases: no key, no recordings (what CI runs)
+python -m evals.run_gate --record      # with the key: runs all 35 cases live and records the 14 model cases
+python -m evals.run_gate               # replay: all 35 cases from the local recordings, no key needed
 python -m evals.chaos_run              # 20 requests at 60% chaos -> evals/chaos_log.txt
 python -m evals.chaos_run --outage     # total outage
 ```
 
-* **Rule cases (H1–H16)** run the real graph with a stub model, so they test the rules, not the model.
+* **Rule cases (H1–H21)** run the real graph with a stub model, so they test the rules, not the model.
   They pass without a key, so CI runs them on every push.
 * **Model cases (S1–S14)** replay recorded Groq responses ("cassettes") from `evals/cassettes/`, keyed by a
   hash of model + masked prompt. Cassettes are **not committed** (see `.gitignore`): each developer records
   them once with `--record`, and again after changing a prompt or a model name. They hold only masked text.
-* The full gate passes when 16/16 hard cases pass and at least 12 of 14 soft cases pass (85%, rounded up).
+* The full gate passes when 21/21 hard cases pass and at least 12 of 14 soft cases pass (85%, rounded up).
   It prints one line per failing case id and exits non-zero on a miss.
-* **Red-to-green drill:** in `backend/policy.py`, remove `"system"` from `DENY_NAMES` and run the gate:
-  it goes red and names **H9**. Restore it and the gate is green.
+* **Red-to-green drill (the PDF's "allow `import os`"):** in `backend/policy.py`, delete the `"os": …`
+  entry from `DENY_MODULES` and run `python -m evals.run_gate --hard-only`. It goes red and names **H19**
+  ("import os alone is denied"). Restore it and the gate is green.
+
+### What the code policy decides (R2)
+
+| Decision | Python (`policy.py`) | JavaScript (`policy_js.py`) |
+| --- | --- | --- |
+| **Deny**: refused automatically, nothing runs | `import os` / `sys` / `subprocess` / `ctypes` …; `os.system`, `popen`, `exec*`, `fork`; deleting files (`os.remove`, `unlink`, `rmdir`, `shutil.rmtree`, `Path.unlink`), even when only referenced; `sudo`, `rm -rf`, `mkfs`, `shutdown -h now` … anywhere in a string; `eval` / `exec` / `getattr`; sandbox escapes | `require('child_process' / 'os' / 'vm' …)`; `fs.unlink` / `rm` / `rmdir` (sync and async); the same shell text; `eval`, `new Function`, dynamic `import()`; `process.env`, constructor chains |
+| **Needs approval**: an admin decides first | file access (`open`, `pathlib`, `io`, `tempfile`, `shutil` copy …); network access (`http`, `urllib`, `requests`, `socket` …) and **any `http://` or `https://` address** in the code (links in docstrings don't count); `input()`; unknown modules | `fs`, `readline`; `http`, `https`, `net`, `fetch`, `WebSocket`, and any `http(s)://` address; unknown modules |
+| **Allow**: runs in the sandbox | everything else, e.g. `list.remove`, `re.compile`, `functools` | everything else |
+
+Each reason starts with its category ("Deletes or damages files: calls shutil.rmtree"), and the UI lists them.
 
 ## HTTP contract
 

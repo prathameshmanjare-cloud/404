@@ -95,6 +95,7 @@ def call_model(role: str, messages: list[dict], controls: dict | None = None,
     # Every prompt is masked again here: no unmasked text can reach a provider or a cassette.
     messages = [{"role": m["role"], "content": mask(m["content"])} for m in messages]
     errors: list[str] = []
+    missing: list[str] = []
 
     for idx, model in enumerate(models_for(role)):
         tier = "primary" if idx == 0 else "fallback"
@@ -113,8 +114,11 @@ def call_model(role: str, messages: list[dict], controls: dict | None = None,
                 breaker.record_success()
                 METER.ok(model, usage)
                 return ModelReply(text=text, model=model, tier=tier)
-            except CassetteMissing:
-                raise
+            except CassetteMissing as exc:
+                # Replay follows the same path as the recorded run: if the primary was rate-limited while
+                # recording, the answer was saved under the fallback model, so try the next model.
+                missing.append(str(exc))
+                break
             except ModelError as exc:
                 METER.fail(model)
                 errors.append(f"{model}: {exc}")
@@ -126,5 +130,9 @@ def call_model(role: str, messages: list[dict], controls: dict | None = None,
                     break
                 sleep(backoff_delay(attempt, rel["base_delay_s"], rel["max_delay_s"], exc.retry_after))
         # Retries for this model are exhausted: one failure for its breaker, then the next model.
-        breaker.record_failure()
+        # A missing recording is not a provider failure, so it never trips the breaker.
+        if not (missing and missing[-1].startswith(f"no cassette for {model} ")):
+            breaker.record_failure()
+    if missing and not errors:
+        raise CassetteMissing(missing[0])
     raise ModelUnavailable("; ".join(errors[-4:]) or f"no model available for {role}")

@@ -6,6 +6,7 @@ import Composer from "./components/Composer";
 import HistoryList from "./components/HistoryList";
 import RequestView from "./components/RequestView";
 import QualityPage from "./components/QualityPage";
+import TicketsPage from "./components/TicketsPage";
 
 function toEntries(runs: RunRecord[]): HistoryEntry[] {
   return runs.map((r) => ({ userId: r.owner, at: r.created * 1000, reply: r.reply }));
@@ -23,6 +24,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  const [openTickets, setOpenTickets] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export default function App() {
           setHistory(toEntries(runs));
           setSignedIn(true);
         }
+        return refreshTicketCount();
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -65,6 +68,23 @@ export default function App() {
       cancelled = true;
     };
   }, [userId]);
+
+  // Admins see how many tickets are open; everyone else never asks (the server would refuse anyway).
+  const isAdmin = role === "admin";
+  async function refreshTicketCount() {
+    if (users.find((u) => u.user_id === userId)?.role !== "admin") {
+      setOpenTickets(0);
+      return;
+    }
+    try {
+      setOpenTickets((await api.tickets("open")).counts.open);
+    } catch {
+      /* not critical */
+    }
+  }
+  useEffect(() => {
+    if (!isAdmin && page === "tickets") setPage("assistant");   // the Tickets page is for admins only
+  }, [isAdmin, page]);
 
   // The backend keeps only each user's last 3 requests; reload so older ones drop off the list too.
   async function refreshHistory() {
@@ -94,6 +114,7 @@ export default function App() {
     try {
       upsert(await api.submit(text, controls));
       await refreshHistory();
+      await refreshTicketCount();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -134,7 +155,7 @@ export default function App() {
   return (
     <div className="shell">
       <Header page={page} onPage={setPage} users={users} userId={userId} onUser={setUserId} health={health}
-              controls={controls} busy={busy} />
+              controls={controls} busy={busy} isAdmin={isAdmin} openTickets={openTickets} />
       {health && !health.key_loaded && health.llm_mode !== "replay" && (
         <div className="banner warn">
           <strong>No Groq API key loaded.</strong> Answers come only from the built-in templates (common tasks
@@ -160,8 +181,8 @@ export default function App() {
               <section className="card pending" aria-live="polite">
                 <div className="spinner" aria-hidden />
                 <div>
-                  <div className="eyebrow">Working on</div>
-                  <p className="pending-text">{pending}</p>
+                  <div className="eyebrow">Working on your request</div>
+                  <p className="pending-text">Your request is being masked and processed…</p>
                   <p className="muted small">
                     Masking personal data, understanding the request, then writing and testing code in the sandbox
                     (or writing an answer). Code requests usually take 10–30 seconds.
@@ -188,6 +209,8 @@ export default function App() {
             )}
           </main>
         </div>
+      ) : page === "tickets" && isAdmin ? (
+        <TicketsPage onCounts={setOpenTickets} />
       ) : (
         <QualityPage controls={controls} onControls={setControls} />
       )}
