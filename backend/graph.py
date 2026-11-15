@@ -184,8 +184,8 @@ def sql_node(state: CodeForgeState) -> dict:
 
 def refuse_node(state: CodeForgeState) -> dict:
     return {"status": "refused", "notes": state.get("notes", []) + [
-        "I can't help with that request. Access and roles come from your account, not from the message, "
-        "and I don't change them or show other users' data."]}
+        "I can't help with that request. If it was about another user's data or a different role: you can "
+        "only see your own requests, and who you are comes from your sign-in, not from the message."]}
 
 
 def general_node(state: CodeForgeState) -> dict:

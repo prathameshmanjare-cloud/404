@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { Controls, Health, HistoryEntry, Reply, User } from "./types";
+import type { Controls, Health, HistoryEntry, Reply, RunRecord, User } from "./types";
 import Header, { type Page } from "./components/Header";
 import Composer from "./components/Composer";
 import HistoryList from "./components/HistoryList";
 import RequestView from "./components/RequestView";
 import QualityPage from "./components/QualityPage";
+
+function toEntries(runs: RunRecord[]): HistoryEntry[] {
+  return runs.map((r) => ({ userId: r.owner, at: r.created * 1000, reply: r.reply }));
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>("assistant");
@@ -17,6 +21,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,6 +40,40 @@ export default function App() {
   }, []);
 
   const role = users.find((u) => u.user_id === userId)?.role;
+
+  // Whenever the signed-in user changes, drop everything on screen and load THAT user's history from the
+  // backend, which only returns the caller's own runs. Nothing from the previous user stays visible.
+  useEffect(() => {
+    let cancelled = false;
+    setHistory([]);
+    setSelected(null);
+    setError(null);
+    setSignedIn(false);
+    api
+      .signIn(userId)
+      .then(() => api.runs())
+      .then((runs) => {
+        if (!cancelled) {
+          setHistory(toEntries(runs));
+          setSignedIn(true);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  // The backend keeps only each user's last 3 requests; reload so older ones drop off the list too.
+  async function refreshHistory() {
+    try {
+      setHistory(toEntries(await api.runs()));
+    } catch {
+      /* keep what is on screen */
+    }
+  }
   const current = history.find((h) => h.reply.thread_id === selected) ?? null;
 
   function upsert(reply: Reply) {
@@ -53,7 +92,8 @@ export default function App() {
     setPending(text);
     setError(null);
     try {
-      upsert(await api.submit(userId, text, controls));
+      upsert(await api.submit(text, controls));
+      await refreshHistory();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -67,7 +107,8 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      upsert(await api.resume(current.reply.thread_id, userId, decision));
+      upsert(await api.resume(current.reply.thread_id, decision));
+      await refreshHistory();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -111,8 +152,8 @@ export default function App() {
       {page === "assistant" ? (
         <div className="workspace">
           <aside className="sidebar">
-            <Composer busy={busy} onSend={send} />
-            <HistoryList history={history} selected={selected} onSelect={setSelected} />
+            <Composer busy={busy || !signedIn} onSend={send} />
+            <HistoryList history={history} selected={selected} onSelect={setSelected} isAdmin={role === "admin"} />
           </aside>
           <main className="main">
             {pending ? (

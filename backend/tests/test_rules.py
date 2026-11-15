@@ -6,6 +6,7 @@ from escalation import should_escalate
 from guard.identity import UnknownUser, can_approve, get_identity
 from guard.mask import luhn_valid, mask
 from guard.quota import QUOTA, check_quota
+from guard.session import acting_as
 from policy import evaluate_code_policy
 from report import render_report
 from runs import RUNS, NotFound, Session, idempotency_key
@@ -70,11 +71,14 @@ def test_not_found_is_identical():
     errors = []
     for rid in ("r1", "missing"):
         with pytest.raises(NotFound) as exc:
-            RUNS.get_run(a, rid)
+            with acting_as(a):
+                RUNS.get_run(rid)
         errors.append(str(exc.value))
     assert errors[0] == errors[1]
-    assert RUNS.get_run(b, "r1").owner == "user_2"
-    assert RUNS.get_run(get_identity(CFG, "admin"), "r1")
+    with acting_as(b):
+        assert RUNS.get_run("r1").owner == "user_2"
+    with acting_as(get_identity(CFG, "admin")):
+        assert RUNS.get_run("r1")
 
 
 def test_idempotency_key():

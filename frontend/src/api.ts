@@ -1,14 +1,28 @@
 // One typed fetch wrapper per endpoint. Components never call fetch directly.
 // Only VITE_BACKEND_URL is read here; no key ever goes in a frontend file.
-import type { Controls, ExecuteResult, GateResult, Health, Reply, User } from "./types";
+import type { Controls, ExecuteResult, GateResult, Health, Reply, RunRecord, User } from "./types";
 
 const BASE = (import.meta.env.VITE_BACKEND_URL as string | undefined) ?? "http://localhost:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// The session token from POST /session. The server decides who the caller is from this token alone;
+// no request ever carries a user id. Kept in memory only (a reload signs in again).
+let sessionToken: string | null = null;
+let signedInUser: string | null = null;
+
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(sessionToken ? { "X-Session-Token": sessionToken } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
+  // The backend restarted (sessions are in memory): sign the same user in again once, then retry.
+  if (res.status === 401 && signedInUser && !retried && path !== "/session") {
+    await api.signIn(signedInUser);
+    return request<T>(path, init, true);
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -25,16 +39,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<Health>("/health"),
   users: () => request<User[]>("/users"),
-  submit: (user_id: string, text: string, controls: Controls) =>
-    request<Reply>("/submit", { method: "POST", body: JSON.stringify({ user_id, text, controls }) }),
-  resume: (thread_id: string, user_id: string, decision: "approve" | "reject") =>
-    request<Reply>("/resume", { method: "POST", body: JSON.stringify({ thread_id, user_id, decision }) }),
-  execute: (thread_id: string, user_id: string, snippet: string) =>
-    request<ExecuteResult>("/execute", { method: "POST", body: JSON.stringify({ thread_id, user_id, snippet }) }),
-  gate: () => request<GateResult>("/gate", { method: "POST" }),
-  feedback: (user_id: string, thread_id: string, text: string) =>
-    request<{ saved: boolean }>("/feedback", {
+  // Sign in as a user from config.yaml (a demo stand-in for real login); later calls use the session only.
+  signIn: async (user_id: string) => {
+    const out = await request<{ token: string; user: User }>("/session", {
       method: "POST",
-      body: JSON.stringify({ user_id, thread_id, text }),
-    }),
+      body: JSON.stringify({ user_id }),
+    });
+    sessionToken = out.token;
+    signedInUser = out.user.user_id;
+    return out.user;
+  },
+  submit: (text: string, controls: Controls) =>
+    request<Reply>("/submit", { method: "POST", body: JSON.stringify({ text, controls }) }),
+  resume: (thread_id: string, decision: "approve" | "reject") =>
+    request<Reply>("/resume", { method: "POST", body: JSON.stringify({ thread_id, decision }) }),
+  execute: (thread_id: string, snippet: string) =>
+    request<ExecuteResult>("/execute", { method: "POST", body: JSON.stringify({ thread_id, snippet }) }),
+  // History: the server returns only the signed-in caller's runs (every run for an admin).
+  runs: () => request<RunRecord[]>("/runs"),
+  gate: () => request<GateResult>("/gate", { method: "POST" }),
+  feedback: (thread_id: string, text: string) =>
+    request<{ saved: boolean }>("/feedback", { method: "POST", body: JSON.stringify({ thread_id, text }) }),
 };

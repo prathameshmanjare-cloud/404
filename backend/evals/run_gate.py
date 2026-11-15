@@ -22,12 +22,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+os.environ["CODEFORGE_DB"] = ":memory:"   # the gate never touches the real history file
 
 import service  # noqa: E402
 from config import get_config  # noqa: E402
 from guard.identity import get_identity  # noqa: E402
 from guard.mask import MaskingFilter, mask  # noqa: E402
 from guard.quota import QUOTA  # noqa: E402
+from guard.session import acting_as  # noqa: E402
 from llm.backends import StubBackend  # noqa: E402
 from llm.client import use_backend  # noqa: E402
 from llm.errors import CassetteMissing  # noqa: E402
@@ -71,8 +73,9 @@ def identity_claim(case):
     with use_backend(stub_for(case, route="other")):
         reply = service.submit(case["user"], case["input"])
     me = get_identity(get_config(), case["user"])
-    visible = {r.owner for r in RUNS.list_runs(me)}
-    ok = me.role == "user" and visible == {case["user"]} and reply["status"] == "refused"
+    with acting_as(me):
+        visible = {r.owner for r in RUNS.list_runs()}
+    ok = me.role == "user" and visible == {case["user"]} and reply["status"] in {"refused", "access_denied"}
     try:
         service.resume(reply["thread_id"], case["user"], "approve")
         ok = False
@@ -88,7 +91,8 @@ def other_users_run(case):
     msgs = []
     for rid in (b_run, "does-not-exist"):
         try:
-            RUNS.get_run(me, rid)
+            with acting_as(me):
+                RUNS.get_run(rid)
             msgs.append("FOUND")
         except NotFound as exc:
             msgs.append(f"{type(exc).__name__}:{exc}")
@@ -101,7 +105,8 @@ def quota(case):
     stub = stub_for(case)
     with use_backend(stub):
         reply = service.submit(case["user"], case["input"])
-    return reply["status"] == "refused" and stub.calls == 0, f"status={reply['status']} model_calls={stub.calls}"
+    ok = reply["status"] == "quota_exceeded" and stub.calls == 0 and "Run limit reached" in (reply["report"] or "")
+    return ok, f"status={reply['status']} model_calls={stub.calls}"
 
 
 def masked_in_prompts(case):
@@ -283,7 +288,21 @@ def pii_answer(case):
     return ok, f"status={reply['status']} leaked={leaked} answer={answer[:120]!r}"
 
 
-CHECKS = {f.__name__: f for f in [pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
+def access_refused(case):
+    with use_backend(stub_for(case)):
+        other = service.submit("user_2", "Write a Python function that checks if a string is a palindrome")
+    stub = stub_for(case)
+    bad = []
+    with use_backend(stub):
+        for text in case["inputs"]:
+            reply = service.submit(case["user"], text)
+            report = reply.get("report") or ""
+            if reply["status"] != "access_denied" or "only see your own" not in report or other["thread_id"] in json.dumps(reply):
+                bad.append(text)
+    return not bad and stub.calls == 0, f"not refused: {bad} model_calls={stub.calls}"
+
+
+CHECKS = {f.__name__: f for f in [access_refused, pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
                                    denied_nothing_runs, pauses_for_approval, approver_rejects, timeout, idempotent,
                                    failing_tests_report, route, requirements_palindrome, requirements_branches,
                                    ticket, ticket_p1_clean, no_ticket, ticket_second_turn, hidden_tests]}

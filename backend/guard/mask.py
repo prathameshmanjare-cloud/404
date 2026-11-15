@@ -215,10 +215,12 @@ class MaskingFilter(logging.Filter):
     """Defense in depth: every log line is masked even if a caller forgot."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            msg = record.getMessage()
-        except Exception:  # pragma: no cover
-            return True
-        record.msg = mask(msg)
-        record.args = ()
+        # Mask the message and each argument in place, keeping the args' shape: some formatters
+        # (uvicorn's access log) unpack record.args themselves.
+        if isinstance(record.msg, str):
+            record.msg = mask(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(mask(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: mask(v) if isinstance(v, str) else v for k, v in record.args.items()}
         return True

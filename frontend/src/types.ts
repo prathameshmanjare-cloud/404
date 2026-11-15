@@ -10,6 +10,8 @@ export type Status =
   | "unavailable"
   | "invalid_output"
   | "answered"
+  | "access_denied"
+  | "quota_exceeded"
   | "sql";
 
 export type Tier = "primary" | "fallback" | "template" | "none";
@@ -29,6 +31,15 @@ export interface Controls {
 export interface Policy {
   decision: "allow" | "needs_approval" | "deny";
   reasons: string[];
+}
+
+// Why a request was refused for trying to reach another user's data or identity.
+export interface Denial {
+  kind: "impersonation" | "role" | "user_data" | "group_data" | "quota";
+  title: string;
+  reason: string;
+  allowed: string;
+  assurance: string;
 }
 
 // A sensitive value found in the request: its type and the result of the code checks. Never the value.
@@ -65,6 +76,7 @@ export interface Reply {
   language: "python" | "javascript" | null;
   answer: string | null;
   pii: PiiFinding[];
+  denial?: Denial | null;
   code: string | null;
   tests: string | null;
   sql: string | null;
@@ -75,6 +87,13 @@ export interface Reply {
   run: RunInfo | null;
   requirements?: { function_name?: string; parameters?: { name: string; type: string }[] } | null;
   example?: string;
+}
+
+export interface RunRecord {
+  run_id: string;
+  owner: string;
+  created: number; // seconds since epoch
+  reply: Reply;
 }
 
 export interface HistoryEntry {

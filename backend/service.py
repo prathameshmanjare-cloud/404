@@ -9,9 +9,11 @@ from langgraph.types import Command
 from config import get_config
 from examples import example_call
 from graph import GRAPH
+from guard.access import check_access_request, refusal, refusal_message
 from guard.identity import UnknownUser, can_approve, get_identity
 from guard.mask import MaskingFilter, find_pii, mask, mask_obj
-from guard.quota import check_quota
+from guard.quota import QUOTA, check_quota
+from guard.session import acting_as
 from policy import evaluate_code_policy
 from policy_js import evaluate_js_policy
 from runs import RUNS, NotFound
@@ -23,13 +25,48 @@ log = logging.getLogger("codeforge.service")
 
 def setup_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
-    if not any(isinstance(f, MaskingFilter) for h in root.handlers for f in h.filters):
+    if not root.handlers:
         handler = logging.StreamHandler()
-        handler.addFilter(MaskingFilter())
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root.addHandler(handler)
     root.setLevel(level)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    mask_all_log_handlers()
+
+
+def mask_all_log_handlers() -> None:
+    """Every handler of every logger masks PII, including the web server's own (uvicorn) loggers."""
+    names = ["", "uvicorn", "uvicorn.error", "uvicorn.access", *logging.root.manager.loggerDict]
+    for name in names:
+        logger = logging.getLogger(name)
+        for handler in getattr(logger, "handlers", []):
+            if not any(isinstance(f, MaskingFilter) for f in handler.filters):
+                handler.addFilter(MaskingFilter())
+
+
+def quota_message(cfg: dict, identity) -> dict:
+    limit = int(cfg["quota"].get(identity.role, 0))
+    return {
+        "kind": "quota",
+        "title": "Run limit reached",
+        "reason": (f"You have used all {limit} runs allowed for a {identity.role} account "
+                   f"({identity.name}, {identity.user_id}). The limit is set per user in config.yaml and "
+                   f"checked in code, so it can't be changed from a message."),
+        "allowed": "Your earlier requests and answers are still under Your history. Ask an admin to raise the limit.",
+        "assurance": "Nothing was sent to the AI model and nothing was run.",
+    }
+
+
+def list_my_runs() -> list[dict]:
+    """The signed-in caller's past runs. Takes no user argument: identity comes from the session."""
+    return [{"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": r.result}
+            for r in RUNS.list_runs() if r.result]
+
+
+def get_my_run(run_id: str) -> dict:
+    """One past run of the signed-in caller; "missing" and "not yours" raise the same NotFound."""
+    r = RUNS.get_run(run_id)
+    return {"run_id": r.run_id, "owner": r.owner, "created": r.created, "reply": r.result}
 
 
 class ServiceError(Exception):
@@ -48,6 +85,7 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
         "route": state.get("route"),
         "language": state.get("language") if state.get("code") else None,
         "answer": state.get("answer"),
+        "denial": state.get("denial"),
         "pii": state.get("pii") or [],
         "code": state.get("code"),
         "tests": state.get("tests"),
@@ -67,7 +105,7 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
     # Final pass: nothing unmasked leaves the backend, even text a model echoed back.
     for key in ("report", "ticket", "triage", "answer"):
         out[key] = mask_obj(out[key])
-    RUNS.update(thread_id, status, {k: out[k] for k in ("status", "report", "tier")})
+    RUNS.update(thread_id, status, out)  # the owner (and admins) can reload it; nobody else
     return out
 
 
@@ -95,12 +133,21 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
     log.info("submit user=%s request=%s", user_id, request[:200])
 
     thread_id = uuid.uuid4().hex
+    # Rule in code, before any model call: no identity claims, no reaching into other users' data.
+    denial = check_access_request(request, identity, cfg)
+    if denial:
+        log.warning("access refused user=%s reason=%s", identity.user_id, denial)
+        RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
+        return _reply(thread_id, {"status": "access_denied", "tier": "none", "request": request, "pii": pii,
+                                  "denial": refusal(identity, denial),
+                                  "report": refusal_message(identity, denial)}, False)
     if not check_quota(cfg, identity):
-        RUNS.create(thread_id, identity.user_id, request)
-        return _reply(thread_id, {"status": "refused", "tier": "none", "request": request,
-                                  "pii": pii,
-                                  "report": "Run quota reached for this user. No model was called."}, False)
-    RUNS.create(thread_id, identity.user_id, request)
+        log.warning("quota reached user=%s", identity.user_id)
+        RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
+        limit = quota_message(cfg, identity)
+        return _reply(thread_id, {"status": "quota_exceeded", "tier": "none", "request": request, "pii": pii,
+                                  "denial": limit, "report": f"{limit['title']}.\n{limit['reason']}"}, False)
+    RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
     state = {"thread_id": thread_id, "user_id": identity.user_id, "role": identity.role, "request": request,
              "controls": ctl, "attempts": 0, "tier": "none", "notes": [], "status": "started", "pii": pii,
              "language": "python"}
@@ -140,9 +187,10 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
     except UnknownUser as exc:
         raise ServiceError(str(exc), 403) from exc
     try:
-        RUNS.get_run(caller, thread_id)
+        with acting_as(caller):
+            RUNS.get_run(thread_id)
     except NotFound as exc:
-        raise ServiceError("run not found", 404) from exc
+        raise ServiceError(str(exc), 404) from exc
     snippet = snippet or ""
     if len(snippet) > MAX_SNIPPET_CHARS:
         raise ServiceError(f"snippet is longer than {MAX_SNIPPET_CHARS} characters")
@@ -164,7 +212,7 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
     if snippet_policy.decision != "allow":
         raise ServiceError("the snippet was refused by the policy gate: " + "; ".join(snippet_policy.reasons), 403)
     if not check_quota(cfg, caller):
-        raise ServiceError("run quota reached for this user", 429)
+        raise ServiceError(quota_message(cfg, caller)["title"] + ". " + quota_message(cfg, caller)["reason"], 429)
 
     sb = cfg["sandbox"]
     log.info("execute thread=%s user=%s snippet=%s", thread_id, user_id, snippet[:200])

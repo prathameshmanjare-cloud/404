@@ -20,6 +20,9 @@ def render_report(state: dict) -> str:
         t = state.get("ticket") or {}
         lines.append(f"Handed to a person: ticket {t.get('ticket_id')} ({t.get('priority')}, "
                      f"response within {t.get('sla_hours')}h). Reason: {t.get('reason')}.")
+    elif status == "access_denied":
+        lines.append(state.get("report") or "Access denied.")
+        return "\n".join(lines)
     elif status == "refused":
         lines.append(state.get("notes", ["Request refused."])[-1])
     elif status == "unavailable":

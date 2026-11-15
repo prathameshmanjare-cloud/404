@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { HistoryEntry } from "../types";
 import CodeBlock from "./CodeBlock";
 import RunPanel from "./RunPanel";
+import AccessDenied from "./AccessDenied";
 import { LANGUAGE, PII_LABEL, statusInfo, steps, TIER } from "./status";
 import type { PiiFinding } from "../types";
 
@@ -66,6 +67,23 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
   const [tab, setTab] = useState<Tab>(r.answer ? "answer" : "overview");
   const active = visible.some((t) => t.id === tab) ? tab : "overview";
 
+  if ((r.status === "access_denied" || r.status === "quota_exceeded") && r.denial) {
+    return (
+      <div className="request">
+        <section className="card request-head">
+          <div className="request-title">
+            <div className="eyebrow">Request</div>
+            <h1>{r.request}</h1>
+          </div>
+          <div className="request-badges">
+            <span className={`badge lg ${s.tone}`}>{s.label}</span>
+          </div>
+        </section>
+        <AccessDenied denial={r.denial} />
+      </div>
+    );
+  }
+
   return (
     <div className="request">
       <section className="card request-head">
@@ -115,7 +133,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
         <section className={`callout ${s.tone}`}>
           <div>
             <h3>{s.label}</h3>
-            <p>{s.help}</p>
+            <p>{r.status === "access_denied" && r.report ? r.report : s.help}</p>
           </div>
         </section>
       )}

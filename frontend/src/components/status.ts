@@ -21,6 +21,16 @@ export const STATUS: Record<Status, { label: string; tone: string; help: string 
     tone: "warn",
     help: "The model's answer was not valid Python, even after asking it again. Nothing was executed.",
   },
+  access_denied: {
+    label: "Access denied",
+    tone: "bad",
+    help: "You can only see your own requests. Who you are comes from your sign-in, not from what you type.",
+  },
+  quota_exceeded: {
+    label: "Limit reached",
+    tone: "bad",
+    help: "You have used all the runs allowed for your account.",
+  },
   answered: { label: "Answered", tone: "ok", help: "Answered in text. No code was generated or run." },
   sql: { label: "SQL ready", tone: "ok", help: "A read-only query was written and checked. It was not executed." },
 };
@@ -72,6 +82,9 @@ export function steps(r: Reply): Step[] {
     ];
   }
   const isSql = !!r.sql || r.status === "sql";
+  if (r.status === "access_denied") {
+    return [{ label: "Identity check", state: "failed", note: "Other users' data is off limits" }];
+  }
   if (r.status === "escalated") {
     return [
       { label: "Understand", state: "warn", note: "Handed to a person" },

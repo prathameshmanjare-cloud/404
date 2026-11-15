@@ -13,6 +13,12 @@ quota:
   admin: 1000
 
 # Model ids must exist on your key: GET /health lists the configured ones, and startup fails fast if one is gone.
+history:
+  max_per_user: 3      # each user keeps only their 3 most recent requests; older ones are deleted
+
+storage:
+  db_path: data/codeforge.db   # run history (masked) survives restarts; data/ is gitignored
+
 models:
   small: openai/gpt-oss-20b            # router, requirements, triage, handoff
   large: openai/gpt-oss-120b           # code, tests

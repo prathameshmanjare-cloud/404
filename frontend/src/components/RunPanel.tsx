@@ -34,7 +34,7 @@ export default function RunPanel({ reply, userId }: Props) {
     setRunning(true);
     setError(null);
     try {
-      setResult(await api.execute(reply.thread_id, userId, snippet));
+      setResult(await api.execute(reply.thread_id, snippet));
     } catch (e) {
       setResult(null);
       setError((e as Error).message);

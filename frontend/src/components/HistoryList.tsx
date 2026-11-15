@@ -5,14 +5,21 @@ interface Props {
   history: HistoryEntry[];
   selected: string | null;
   onSelect: (threadId: string) => void;
+  isAdmin?: boolean;
 }
 
-export default function HistoryList({ history, selected, onSelect }: Props) {
+export default function HistoryList({ history, selected, onSelect, isAdmin }: Props) {
   return (
     <section className="card history" aria-label="Request history">
       <h2 className="card-title">
-        History <span className="count">{history.length}</span>
+        {isAdmin ? "All users' history" : "Your history"}{" "}
+        <span className="count">{isAdmin ? history.length : `${history.length} / 3`}</span>
       </h2>
+      <p className="muted small history-note">
+        {isAdmin
+          ? "Each user's last 3 requests, so admins can review and approve code."
+          : "Your last 3 requests. Older ones are deleted automatically, and only you can see these."}
+      </p>
       {history.length === 0 ? (
         <p className="muted small">Your requests will appear here.</p>
       ) : (
