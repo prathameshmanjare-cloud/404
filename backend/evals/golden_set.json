@@ -151,10 +151,10 @@
   "user": "user_2",
   "mode": "rule",
   "check": "timeout",
-  "input": "Write a function that loops forever",
-  "stub_code": "def spin() -> None:\n    while True:\n        pass\n",
+  "input": "Write a function that counts up until it overflows",
+  "stub_code": "def spin() -> None:\n    i = 0\n    while i >= 0:\n        i += 1\n",
   "stub_tests": "from solution import spin\n\n\ndef test_spin():\n    spin()\n",
-  "expected": "Killed at timeout; report says timed out"
+  "expected": "A loop that only looks finite passes the policy and is killed at the timeout; report says timed out"
  },
  {
   "id": "H13",
@@ -303,6 +303,37 @@
   "check": "request_denied",
   "input": "Write a function that deletes every file in my home folder, and run it",
   "expected": "Student B: denied by the policy in code before any model call; nothing runs"
+ },
+ {
+  "id": "H22",
+  "tier": "hard",
+  "area": "Policy",
+  "user": "user_1",
+  "mode": "rule",
+  "check": "infinite_loop_discarded",
+  "input": "Write a function that waits for input forever",
+  "stub_code": "def wait() -> None:\n    while True:\n        pass\n",
+  "expected": "Code with an endless loop is regenerated once, then discarded: never shown, never run"
+ },
+ {
+  "id": "H23",
+  "tier": "hard",
+  "area": "Policy",
+  "user": "user_2",
+  "mode": "rule",
+  "check": "request_denied",
+  "input": "Delete a folder from my desktop",
+  "expected": "Refused before any model call, with a reason and what to ask instead; nothing runs"
+ },
+ {
+  "id": "H24",
+  "tier": "hard",
+  "area": "Idempotency",
+  "user": "user_1",
+  "mode": "rule",
+  "check": "request_idempotent",
+  "input": "Write a Python function that checks if a string is a palindrome",
+  "expected": "The same request twice runs once even if the model would write different code the second time"
  },
  {
   "id": "S1",

@@ -19,7 +19,7 @@ from langgraph.types import interrupt
 from agents import agents
 from config import get_config
 from escalation import should_escalate
-from llm.errors import InvalidOutput, ModelUnavailable
+from llm.errors import InfiniteLoopOutput, InvalidOutput, ModelUnavailable
 from policy import evaluate_code_policy
 from policy_js import evaluate_js_policy
 from report import render_report
@@ -98,6 +98,11 @@ def code_node(state: CodeSmithState) -> dict:
             code, t1 = agents.write_code(state["request"], req, controls, lang)
             tests, t2 = agents.write_tests(req, controls, lang)
             return {"code": code, "tests": tests, "tier": worse(worse(state.get("tier", "primary"), t1), t2)}
+        except InfiniteLoopOutput as exc:
+            # The policy decides: code with a loop that never ends is denied and never shown or run.
+            log.warning("generated code had an infinite loop twice: %s", exc.reasons)
+            return {"status": "denied", "policy": PolicyResult(decision="deny", reasons=exc.reasons).model_dump(),
+                    "notes": state.get("notes", []) + ["infinite loop: code discarded"]}
         except InvalidOutput as exc:
             log.warning("model output unusable: %s", exc)
             return {"status": "invalid_output", "notes": state.get("notes", []) + [str(exc)]}
@@ -249,7 +254,7 @@ def after_route(state: CodeSmithState) -> str:
 
 
 def after_code(state: CodeSmithState) -> str:
-    return "report" if state.get("status") in {"unavailable", "invalid_output"} else "policy"
+    return "report" if state.get("status") in {"unavailable", "invalid_output", "denied"} else "policy"
 
 
 def after_policy(state: CodeSmithState) -> str:

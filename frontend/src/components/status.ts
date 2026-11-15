@@ -88,10 +88,16 @@ export function steps(r: Reply): Step[] {
     return [{ label: "Identity check", state: "failed", note: "Other users' data is off limits" }];
   }
   if (r.status === "denied" && !r.code) {
-    return [
-      { label: "Understand", state: "done", note: "Code request" },
-      { label: "Safety check", state: "failed", note: "Blocked before any code was written" },
-    ];
+    return r.blocked_before_generation
+      ? [
+        { label: "Understand", state: "done", note: "Code request" },
+        { label: "Safety check", state: "failed", note: "Blocked before any code was written" },
+      ]
+      : [
+        { label: "Understand", state: "done", note: "Code request" },
+        { label: "Generate", state: "warn", note: "Asked to fix once" },
+        { label: "Safety check", state: "failed", note: "Code discarded" },
+      ];
   }
   if (r.status === "escalated") {
     return [

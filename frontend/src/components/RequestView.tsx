@@ -127,6 +127,14 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
         </ol>
       </section>
 
+      {r.reused && (
+        <section className="callout info compact">
+          <div>
+            <strong>Same request as at {new Date(r.reused.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.</strong>{" "}
+            Showing that result: nothing was generated or run again (request key <code>{r.reused.request_key}</code>).
+          </div>
+        </section>
+      )}
       {r.status === "awaiting_approval" && (
         <section className="callout warn">
           <div>
@@ -148,13 +156,30 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
       {r.status !== "done" && r.status !== "awaiting_approval" && r.status !== "sql" && r.status !== "answered" && (
         <section className={`callout ${s.tone}`}>
           <div>
-            <h3>{r.status === "denied" ? "Blocked by the safety policy" : s.label}</h3>
-            <p>{r.status === "access_denied" && r.report ? r.report : s.help}</p>
+            <h3>
+              {r.status !== "denied" ? s.label
+                : r.blocked_before_generation ? "CodeSmith won't write this code"
+                  : "Blocked by the safety policy"}
+            </h3>
+            <p>
+              {r.status === "access_denied" && r.report ? r.report
+                : r.status === "denied" && r.blocked_before_generation
+                  ? "This request was refused before any code was written. Nothing was generated or run."
+                  : r.status === "denied" && !r.code
+                    ? "The generated code was discarded and never shown or run."
+                    : s.help}
+            </p>
             {r.status === "denied" && <ReasonList reasons={r.policy?.reasons ?? []} />}
+            {r.status === "denied" && (r.advice?.length ?? 0) > 0 && (
+              <div className="advice">
+                <strong>What you can ask instead</strong>
+                <ul>{r.advice!.map((a, i) => <li key={i}>{a}</li>)}</ul>
+              </div>
+            )}
             {r.status === "denied" && (
               <p className="muted small">
-                Code that touches the operating system, deletes files, runs shell commands such as sudo, or runs
-                code dynamically is refused automatically. File and network access can be approved by an admin.
+                Deleting files, operating-system access, shell commands such as sudo, loops that never end and
+                dynamic code are refused automatically. File and network access can be approved by an admin.
               </p>
             )}
           </div>
@@ -229,6 +254,7 @@ export default function RequestView({ entry, userId, role, busy, onDecide }: Pro
               <p className="muted small tab-intro">
                 {lang.runner} {r.run.timed_out ? "was stopped at the time limit" : `finished with exit code ${r.run.exit_code}`}.
                 Sandbox: {r.run.sandbox}.
+                {r.run_key && <> Run key <code>{r.run_key}</code> (hash of user, code and tests): the same code and tests never run twice{r.run.cached ? "; this result was reused" : ""}.</>}
               </p>
               <pre className="console">{r.run.output || "(no output)"}</pre>
             </>

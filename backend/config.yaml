@@ -16,6 +16,9 @@ quota:
 history:
   max_per_user: 3      # each user keeps only their 3 most recent requests; older ones are deleted
 
+idempotency:
+  request_window_minutes: 60   # the same request from the same user within this window reuses the earlier result
+
 storage:
   db_path: data/codesmith.db   # run history (masked) survives restarts; data/ is gitignored
 

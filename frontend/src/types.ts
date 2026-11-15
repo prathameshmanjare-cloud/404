@@ -87,6 +87,10 @@ export interface Reply {
   run: RunInfo | null;
   requirements?: { function_name?: string; parameters?: { name: string; type: string }[] } | null;
   example?: string;
+  advice?: string[];                       // what to ask instead, when denied
+  blocked_before_generation?: boolean;     // refused from the request alone: no code was written
+  reused?: { run_id: string; at: number; request_key: string } | null;   // same request as before
+  run_key?: string | null;                 // hash of user + code + tests (first 12 characters)
 }
 
 export interface RunRecord {

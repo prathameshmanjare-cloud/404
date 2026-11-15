@@ -8,7 +8,7 @@ import re
 from pydantic import BaseModel
 
 from agents import prompts
-from llm.errors import InvalidOutput
+from llm.errors import InfiniteLoopOutput, InvalidOutput
 from llm.structured import ask_structured
 from state import Requirements, Route, Triage
 
@@ -79,22 +79,40 @@ def _syntax_error(src: str, language: str = "python") -> str | None:
         return f"{exc.msg} (line {exc.lineno})"
 
 
+def _infinite_loops(src: str, language: str) -> list[str]:
+    if language == "javascript":
+        from policy_js import find_infinite_loops_js
+        return find_infinite_loops_js(src)
+    from policy import find_infinite_loops
+    return find_infinite_loops(src)
+
+
 def _ask_source(role: str, system: str, user: str, schema, field: str, controls: dict,
                 language: str = "python") -> tuple[str, str]:
-    """Ask for a source file; normalize it, and ask once more if it still does not parse."""
+    """Ask for a source file and check it in code before anyone sees it:
+    it must parse, and no loop may run forever. A failing answer gets ONE retry with the reason;
+    if it fails again it is discarded (InvalidOutput / InfiniteLoopOutput), never shown or run."""
     lang = LANG_NAME[language]
     out, reply = ask_structured(role, system, user, schema, controls)
     src = normalize_source(getattr(out, field), language)
     err = _syntax_error(src, language)
-    if err is None:
+    loops = [] if err else _infinite_loops(src, language)
+    if err is None and not loops:
         return src, reply.tier
-    retry_user = (f"{user}\n\nYour previous answer was not valid {lang} ({err}). Put the file in the JSON "
-                  f"string with real line breaks encoded once as \\n, not escaped twice.")
-    out, reply = ask_structured(role, system, retry_user, schema, controls)
+    if err:
+        feedback = (f"Your previous answer was not valid {lang} ({err}). Put the file in the JSON string with "
+                    f"real line breaks encoded once as \\n, not escaped twice.")
+    else:
+        feedback = ("Your previous answer contained a loop that never ends (" + "; ".join(loops) + "). "
+                    "Every loop must stop: give it a condition that becomes false, or a break/return.")
+    out, reply = ask_structured(role, system, f"{user}\n\n{feedback}", schema, controls)
     src = normalize_source(getattr(out, field), language)
     err = _syntax_error(src, language)
     if err is not None:
         raise InvalidOutput(f"{role} returned invalid {lang} twice: {err}")
+    loops = _infinite_loops(src, language)
+    if loops:
+        raise InfiniteLoopOutput(f"{role} wrote a loop that never ends, twice", loops)
     return src, reply.tier
 
 

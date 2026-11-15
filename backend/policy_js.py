@@ -90,6 +90,36 @@ def _blank_strings(src: str) -> str:
                   src, flags=re.S)
 
 
+_ENDLESS_JS = re.compile(r"\bwhile\s*\(\s*(?:true|1|!0|!false)\s*\)|\bfor\s*\(\s*;\s*;\s*\)|\bdo\b")
+
+
+def find_infinite_loops_js(code: str) -> list[str]:
+    """`while (true)`, `for (;;)` and `do {} while (true)` loops whose body has no break, return or throw."""
+    src = _blank_strings(_strip_comments(code or ""))
+    found = []
+    for m in _ENDLESS_JS.finditer(src):
+        line = src.count("\n", 0, m.start()) + 1
+        start = src.find("{", m.end())
+        if start == -1 or src[m.end():start].strip():   # single-statement loop without braces
+            body = src[m.end():src.find(";", m.end()) + 1]
+        else:
+            depth, i = 0, start
+            for i in range(start, len(src)):
+                depth += src[i] == "{"
+                depth -= src[i] == "}"
+                if depth == 0:
+                    break
+            body = src[start:i + 1]
+        if m.group(0) == "do":
+            after = src[start + len(body):start + len(body) + 40] if start != -1 else ""
+            if not re.match(r"\s*while\s*\(\s*(?:true|1|!0|!false)\s*\)", after):
+                continue
+        if not re.search(r"\b(break|return|throw)\b|process\.exit", body):
+            found.append(f"Infinite loop: the loop on line {line} never breaks, returns or throws, so it would "
+                         f"never stop")
+    return list(dict.fromkeys(found))        # a do { } while (true) is matched twice on the same line
+
+
 def evaluate_js_policy(code: str) -> PolicyResult:
     src = _strip_comments(code or "")
     code_only = _blank_strings(src)
@@ -123,6 +153,7 @@ def evaluate_js_policy(code: str) -> PolicyResult:
         url = URL_IN_TEXT.search(text)
         if url:
             approve.append(f"Network access: contains the web address {url.group(0)[:60]}")
+    deny += find_infinite_loops_js(code)
     if deny:
         return PolicyResult(decision="deny", reasons=sorted(set(deny)))
     if approve:

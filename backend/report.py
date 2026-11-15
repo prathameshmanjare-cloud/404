@@ -40,7 +40,10 @@ def render_report(state: dict) -> str:
     else:
         if policy:
             lines.append(f"Policy: {policy.get('decision')} - {'; '.join(policy.get('reasons', []))}.")
-        if status == "denied":
+        if status == "denied" and any("infinite loop" in n for n in state.get("notes") or []):
+            lines.append("The model wrote a loop that never ends, even after being asked to fix it, so its code "
+                         "was discarded. Nothing was shown or executed.")
+        elif status == "denied":
             lines.append("Nothing was executed.")
         elif status == "awaiting_approval":
             lines.append("Waiting for an approver. Nothing has been executed yet.")

@@ -35,7 +35,12 @@ def test_errors_and_timeouts_come_back_as_output():
     t = submit(PAL)["thread_id"]
     err = service.execute(t, "user_1", "is_palindrome(1)")
     assert err["exit_code"] != 0 and "TypeError" in err["output"]
-    hang = service.execute(t, "user_1", "while True:\n    pass")
+    # An obvious infinite loop is refused before it runs ...
+    with pytest.raises(service.ServiceError) as exc:
+        service.execute(t, "user_1", "while True:\n    pass")
+    assert exc.value.status == 403 and "Infinite loop" in str(exc.value)
+    # ... and a loop that only looks finite is stopped by the sandbox timeout.
+    hang = service.execute(t, "user_1", "i = 0\nwhile i >= 0:\n    i += 1")
     assert hang["timed_out"]
 
 

@@ -10,6 +10,7 @@ DENY (refused automatically, nothing runs):
   * dangerous shell text      "sudo", "rm -rf", "mkfs", "shutdown", "chmod 777", ... anywhere in a string
   * dynamic code              eval, exec, compile, __import__, getattr, importlib, pickle, marshal, ...
   * sandbox escapes           __subclasses__, __globals__, __builtins__, frame internals, ...
+  * infinite loops            `while True:` / endless iterators with no break, return or raise
 NEEDS APPROVAL (a person decides before anything runs):
   * file access               open(), pathlib, io, tempfile, glob, shutil copy, zipfile, sqlite3, ...
   * network access            socket, requests, urllib, http, smtplib, ssl, asyncio, ...,
@@ -94,6 +95,66 @@ def _dotted(node: ast.AST, aliases: dict[str, str]) -> str:
     return ".".join(reversed(parts))
 
 
+def _always_true(test: ast.AST) -> bool:
+    """while True / while 1 / while "x" / while not False."""
+    if isinstance(test, ast.Constant):
+        return bool(test.value)
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) and isinstance(test.operand, ast.Constant):
+        return not test.operand.value
+    return False
+
+
+def _endless_iterator(it: ast.AST) -> bool:
+    """for x in itertools.count() / itertools.cycle(...) / iter(int, 1) / repeat(x) with no count."""
+    if not isinstance(it, ast.Call):
+        return False
+    name = _dotted(it.func, {})
+    short = name.split(".")[-1]
+    if short in {"count", "cycle"}:
+        return True
+    if short == "repeat" and len(it.args) < 2 and not it.keywords:
+        return True
+    return short == "iter" and len(it.args) == 2
+    
+
+def _can_leave(body: list[ast.stmt]) -> bool:
+    """True if the loop body has a break (for THIS loop), return, raise or exit call."""
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Return, ast.Raise)):
+            return True
+        if isinstance(node, ast.Break):
+            return True
+        if isinstance(node, ast.Call) and _dotted(node.func, {}).split(".")[-1] in {"exit", "_exit", "quit"}:
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue                                   # a return in a nested function does not leave the loop
+        if isinstance(node, (ast.While, ast.For, ast.AsyncFor)):
+            # a break inside a nested loop only leaves that loop; returns/raises still count
+            stack.extend(n for n in ast.walk(node) if isinstance(n, (ast.Return, ast.Raise)))
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def find_infinite_loops(code: str) -> list[str]:
+    """Loops that can never end: `while True:` (or an endless iterator) with no break, return or raise."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.While) and _always_true(node.test) and not _can_leave(node.body):
+            found.append(f"Infinite loop: the `while {ast.unparse(node.test)}` loop on line {node.lineno} never "
+                         f"breaks, returns or raises, so it would never stop")
+        elif isinstance(node, (ast.For, ast.AsyncFor)) and _endless_iterator(node.iter) and not _can_leave(node.body):
+            found.append(f"Infinite loop: the loop over `{ast.unparse(node.iter)}` on line {node.lineno} never "
+                         f"breaks, returns or raises, so it would never stop")
+    return found
+
+
 def evaluate_code_policy(code: str) -> PolicyResult:
     try:
         tree = ast.parse(code)
@@ -170,6 +231,7 @@ def evaluate_code_policy(code: str) -> PolicyResult:
             if url:
                 approve.append(f"Network access: contains the web address {url.group(0)[:60]}")
 
+    deny += find_infinite_loops(code)
     # A call is also visited as an attribute/name; keep one reason per thing, preferring "calls".
     deny = _dedupe(deny)
     approve = _dedupe(approve)
@@ -212,7 +274,50 @@ _DESTRUCTIVE_REQUEST = [
      "Runs system commands: the request asks to kill processes"),
     (re.compile(r"\b(run\w*|execut\w*)\b[^.?!]{0,30}\b(shell|terminal|bash|cmd|system|os) commands?", re.I),
      "Runs system commands: the request asks to run shell commands"),
+    (re.compile(r"\b(pip3?|npm|yarn|apt(-get)?|brew|yum|dnf|choco|winget)\s+install\b|\binstall\w*\b[^.?!]{0,25}"
+                r"\b(packages?|software|programs?|librar(y|ies)|apps?|drivers?)\b", re.I),
+     "Runs system commands: the request asks to install software"),
+    (re.compile(r"\b(list|show|get|read|print|dump|see)\w*\b[^.?!]{0,25}\b(running\s+)?(processes|services)\b", re.I),
+     "Operating-system access: the request asks to inspect the machine's processes"),
+    (re.compile(r"/etc/(passwd|shadow|hosts)\b|\b(environment\s+variables?|env\s+vars?|ssh\s+keys?|\.ssh\b|"
+                r"private\s+keys?|saved\s+passwords?|browser\s+(cookies|passwords|history)|keychain|registry\s+keys?)", re.I),
+     "Operating-system access: the request asks to read system secrets or settings"),
+    # Only when code is being asked for: "explain what an infinite loop is" is a fine question.
+    (re.compile(r"^(?=.*\b(write|create|make|build|generate|code|implement|give\s+me|program|script|function|"
+                r"snippet)\b).*(\b(infinite|endless|never[- ]?ending|non[- ]?stop)\s+(loop|recursion|process)\b|"
+                r"\bloops?\s+forever\b|\bruns?\s+forever\b|\bnever\s+(stops|ends|terminates)\b|"
+                r"\bwhile\s*\(?\s*true\b|\bfork\s*bomb\b)", re.I | re.S),
+     "Infinite loop: the request asks for code that never stops"),
+    (re.compile(r"\b(key\s*logger|ransomware|virus|malware|trojan|worm|ddos|botnet|crypto\s*miner|spyware|"
+                r"steal\w*|exfiltrat\w*|brute[- ]?forc\w*)\b", re.I),
+     "Harmful software: the request asks for malicious code"),
 ]
+
+# What to ask instead, per category: shown with every denial so the user knows the safe alternative.
+ADVICE = {
+    "Deletes or damages files": "Ask for a function that lists what it would delete (a dry run), or one that works "
+                                "on a list of file names you pass in, without touching your disk.",
+    "Runs system commands": "Ask for a function that builds the command as text for you to run yourself, or does "
+                            "the work in plain Python or JavaScript.",
+    "Dangerous shell command": "Ask for a function that builds the command as text for you to run yourself; "
+                               "CodeSmith never runs shell commands.",
+    "Operating-system access": "Ask for a function that takes the values it needs as arguments instead of reading "
+                               "them from the computer.",
+    "Infinite loop": "Ask for a loop with a clear stop condition, such as a maximum number of steps.",
+    "Dynamic code": "Ask for the logic written out directly, without eval or exec.",
+    "Sandbox escape": "Ask for the logic written out directly, without reaching into interpreter internals.",
+    "Harmful software": "CodeSmith can't help with this.",
+}
+
+
+def advice_for(reasons: list[str]) -> list[str]:
+    """One suggestion per category found in the reasons ("Deletes or damages files: ..." -> its advice)."""
+    out = []
+    for r in reasons:
+        tip = ADVICE.get(r.split(":", 1)[0].split(" (")[0])
+        if tip and tip not in out:
+            out.append(tip)
+    return out
 
 
 def _asks_to_delete_files(text: str) -> bool:

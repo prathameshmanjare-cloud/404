@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 
 from langgraph.types import Command
@@ -15,10 +16,10 @@ from guard.mask import MaskingFilter, find_pii, mask, mask_obj
 from guard.quota import QUOTA, check_quota
 from guard.session import acting_as
 from escalation import should_escalate
-from policy import check_request_intent, evaluate_code_policy
+from policy import advice_for, check_request_intent, evaluate_code_policy
 from tickets import TICKETS, TicketNotFound, build_ticket
 from policy_js import evaluate_js_policy
-from runs import RUNS, NotFound
+from runs import RUNS, NotFound, request_key
 from sandbox import run_js_snippet, run_snippet
 from state import Controls, PolicyResult, Triage
 
@@ -59,6 +60,21 @@ def quota_message(cfg: dict, identity) -> dict:
     }
 
 
+# Finished results that a repeated request may reuse. Failures (unavailable, invalid output) are retried.
+REUSABLE = {"done", "answered", "sql", "awaiting_approval", "escalated", "denied", "rejected", "refused"}
+
+
+def _reused(earlier, req_key: str) -> dict:
+    """The earlier reply for a repeated request, marked as reused. Nothing new is generated, run or ticketed."""
+    reply = _remask(dict(earlier.result))
+    at = time.strftime("%H:%M", time.localtime(earlier.created))
+    reply["reused"] = {"run_id": earlier.run_id, "at": earlier.created, "request_key": req_key[:12]}
+    note = (f"Same request as at {at}: the earlier result is shown. Nothing was generated or run again "
+            f"(request key {req_key[:12]}).")
+    reply["report"] = note + "\n" + (reply.get("report") or "")
+    return reply
+
+
 def _denied_request(cfg: dict, identity, request: str, pii: list, intent) -> dict:
     """A destructive request: refused by the policy before any code exists. Counts as a policy denial (R3)."""
     session = RUNS.session(identity.user_id)
@@ -72,7 +88,7 @@ def _denied_request(cfg: dict, identity, request: str, pii: list, intent) -> dic
               "Refused before any code was written. Nothing was generated or executed.\n"
               "Served by: no model (rules in code only).")
     return {"status": "denied", "tier": "none", "request": request, "pii": pii, "route": "python_function",
-            "policy": intent.model_dump(), "ticket": ticket, "report": report}
+            "policy": intent.model_dump(), "ticket": ticket, "report": report, "blocked_before_generation": True}
 
 
 # Text fields of a stored reply that can carry what the user typed. They are masked again on every read,
@@ -129,6 +145,9 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
                                 state.get("language", "python")),
         "run": {k: run.get(k) for k in ("exit_code", "timed_out", "output", "sandbox", "cached")} if run else None,
     }
+    out["blocked_before_generation"] = bool(state.get("blocked_before_generation"))
+    out["run_key"] = (state.get("idem_key") or "")[:12] or None     # hash of user + code + tests (R2)
+    out["advice"] = advice_for((out.get("policy") or {}).get("reasons", [])) if status == "denied" else []
     if out.get("ticket"):
         TICKETS.save(mask_obj(out["ticket"]), thread_id)     # every ticket is kept for the admin's Tickets page
     # Final pass: nothing unmasked leaves the backend, even text a model echoed back.
@@ -174,15 +193,25 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
     intent = check_request_intent(request)
     if intent.decision == "deny":
         log.warning("request denied by policy user=%s reasons=%s", identity.user_id, intent.reasons)
-        RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
+        RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"],
+                    req_key=request_key(identity.user_id, request, ctl))
         return _reply(thread_id, _denied_request(cfg, identity, request, pii, intent), False)
+    # Request-level idempotency: the same request again returns the earlier result. Nothing is generated or
+    # run twice and no second ticket is opened. Chaos/outage demos always run fresh.
+    req_key = request_key(identity.user_id, request, ctl)
+    if not (ctl.get("chaos") or ctl.get("outage")):
+        earlier = RUNS.find_recent(identity.user_id, req_key, REUSABLE,
+                                   60 * cfg.get("idempotency", {}).get("request_window_minutes", 60))
+        if earlier:
+            log.info("duplicate request user=%s reuses run=%s", identity.user_id, earlier.run_id)
+            return _reused(earlier, req_key)
     if not check_quota(cfg, identity):
         log.warning("quota reached user=%s", identity.user_id)
         RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
         limit = quota_message(cfg, identity)
         return _reply(thread_id, {"status": "quota_exceeded", "tier": "none", "request": request, "pii": pii,
                                   "denial": limit, "report": f"{limit['title']}.\n{limit['reason']}"}, False)
-    RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"])
+    RUNS.create(thread_id, identity.user_id, request, keep=cfg["history"]["max_per_user"], req_key=req_key)
     state = {"thread_id": thread_id, "user_id": identity.user_id, "role": identity.role, "request": request,
              "controls": ctl, "attempts": 0, "tier": "none", "notes": [], "status": "started", "pii": pii,
              "language": "python"}

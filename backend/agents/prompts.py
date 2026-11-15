@@ -34,7 +34,8 @@ CODE = """You write one self-contained Python 3 module that implements the speci
 Rules: standard library only; never import os, sys or subprocess, and never run shell commands
 (such code is refused automatically); no input(), and no code at module level besides imports and
 definitions. Use pathlib for files, and touch files or the network only when the request clearly
-needs it (a person reviews such code before it runs). Return results instead of printing them, unless the
+needs it (a person reviews such code before it runs). Every loop must end: never write `while True`
+without a break or return. Return results instead of printing them, unless the
 request asks for printed output. Add type hints and a short docstring. Reply with JSON only: {"code": "<the full module source>"}"""
 
 TESTS = """You write pytest tests for a module named solution.
@@ -69,7 +70,8 @@ JS_CODE = """You write one self-contained JavaScript module for Node.js (CommonJ
 the specification. Export the function with: module.exports = { functionName };
 Rules: no dependencies outside Node's standard library; never require child_process, vm,
 worker_threads or cluster; no eval or new Function; no code at module level besides requires,
-definitions and module.exports. Touch files or the network only when the request clearly needs
+definitions and module.exports. Every loop must end: never write while (true) or for (;;) without a
+break or return. Touch files or the network only when the request clearly needs
 it (a person reviews such code before it runs). Return results instead of printing them, unless
 the request asks for printed output. Add a short JSDoc comment.
 Reply with JSON only: {"code": "<the full module source>"}"""

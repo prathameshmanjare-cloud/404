@@ -309,11 +309,36 @@ def request_denied(case):
     with use_backend(stub):
         reply = service.submit(case["user"], case["input"])
     reasons = "; ".join((reply.get("policy") or {}).get("reasons", []))
-    ok = reply["status"] == "denied" and stub.calls == 0 and EXECUTIONS.count == 0 and "Deletes" in reasons
+    ok = (reply["status"] == "denied" and stub.calls == 0 and EXECUTIONS.count == 0 and "Deletes" in reasons
+          and reply.get("blocked_before_generation") and reply.get("advice") and not reply.get("code"))
     return ok, f"status={reply['status']} model_calls={stub.calls} executions={EXECUTIONS.count} reasons={reasons}"
 
 
-CHECKS = {f.__name__: f for f in [request_denied, access_refused, pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
+def infinite_loop_discarded(case):
+    stub = stub_for(case)                       # the stub keeps writing the same endless loop
+    with use_backend(stub):
+        reply = service.submit(case["user"], case["input"])
+    code_calls = sum(1 for role, _ in stub.prompts if role == "code")
+    reasons = "; ".join((reply.get("policy") or {}).get("reasons", []))
+    ok = (reply["status"] == "denied" and code_calls == 2 and EXECUTIONS.count == 0 and not reply.get("code")
+          and reasons.startswith("Infinite loop"))
+    return ok, f"status={reply['status']} code_calls={code_calls} executions={EXECUTIONS.count} reasons={reasons}"
+
+
+def request_idempotent(case):
+    versions = iter([PALINDROME_CODE, PALINDROME_CODE.replace("text ==", "text  ==")] * 3)
+    stub = stub_for(case)
+    stub.responses["code"] = lambda messages: json.dumps({"code": next(versions)})   # different code each time
+    with use_backend(stub):
+        first = service.submit(case["user"], case["input"])
+        second = service.submit(case["user"], case["input"])
+    code_calls = sum(1 for role, _ in stub.prompts if role == "code")
+    ok = (EXECUTIONS.count == 1 and code_calls == 1 and second.get("reused")
+          and second["thread_id"] == first["thread_id"])
+    return ok, f"sandbox_runs={EXECUTIONS.count} code_calls={code_calls} reused={bool(second.get('reused'))}"
+
+
+CHECKS = {f.__name__: f for f in [request_denied, infinite_loop_discarded, request_idempotent, access_refused, pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
                                    denied_nothing_runs, pauses_for_approval, approver_rejects, timeout, idempotent,
                                    failing_tests_report, route, requirements_palindrome, requirements_branches,
                                    ticket, ticket_p1_clean, no_ticket, ticket_second_turn, hidden_tests]}

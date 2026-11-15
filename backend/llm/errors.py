@@ -22,3 +22,11 @@ class CassetteMissing(Exception):
 
 class InvalidOutput(ModelUnavailable):
     """A model answered, but not with usable output (for example Python that does not parse, twice)."""
+
+
+class InfiniteLoopOutput(InvalidOutput):
+    """The model wrote code with a loop that can never end, even after being asked again."""
+
+    def __init__(self, message: str, reasons: list[str]) -> None:
+        super().__init__(message)
+        self.reasons = reasons

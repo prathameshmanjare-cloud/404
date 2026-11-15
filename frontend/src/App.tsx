@@ -112,8 +112,9 @@ export default function App() {
     setPending(text);
     setError(null);
     try {
-      upsert(await api.submit(text, controls));
-      await refreshHistory();
+      const reply = await api.submit(text, controls);
+      await refreshHistory();       // first: the server's list (3 most recent, older ones dropped)
+      upsert(reply);                // then: this reply on top, so notes like "reused" stay visible
       await refreshTicketCount();
     } catch (e) {
       setError((e as Error).message);
@@ -128,8 +129,9 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      upsert(await api.resume(current.reply.thread_id, decision));
+      const reply = await api.resume(current.reply.thread_id, decision);
       await refreshHistory();
+      upsert(reply);
     } catch (e) {
       setError((e as Error).message);
     } finally {

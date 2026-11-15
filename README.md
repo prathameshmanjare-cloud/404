@@ -171,19 +171,19 @@ appear on the right, as in a Python shell. Leave the box empty to run the code a
 ```bash
 cd backend
 python -m pytest -q tests              # unit tests for every rule
-python -m evals.run_gate --hard-only   # 21 rule cases: no key, no recordings (what CI runs)
-python -m evals.run_gate --record      # with the key: runs all 35 cases live and records the 14 model cases
-python -m evals.run_gate               # replay: all 35 cases from the local recordings, no key needed
+python -m evals.run_gate --hard-only   # 24 rule cases: no key, no recordings (what CI runs)
+python -m evals.run_gate --record      # with the key: runs all 38 cases live and records the 14 model cases
+python -m evals.run_gate               # replay: all 38 cases from the local recordings, no key needed
 python -m evals.chaos_run              # 20 requests at 60% chaos -> evals/chaos_log.txt
 python -m evals.chaos_run --outage     # total outage
 ```
 
-* **Rule cases (H1–H21)** run the real graph with a stub model, so they test the rules, not the model.
+* **Rule cases (H1–H24)** run the real graph with a stub model, so they test the rules, not the model.
   They pass without a key, so CI runs them on every push.
 * **Model cases (S1–S14)** replay recorded Groq responses ("cassettes") from `evals/cassettes/`, keyed by a
   hash of model + masked prompt. Cassettes are **not committed** (see `.gitignore`): each developer records
   them once with `--record`, and again after changing a prompt or a model name. They hold only masked text.
-* The full gate passes when 21/21 hard cases pass and at least 12 of 14 soft cases pass (85%, rounded up).
+* The full gate passes when 24/24 hard cases pass and at least 12 of 14 soft cases pass (85%, rounded up).
   It prints one line per failing case id and exits non-zero on a miss.
 * **Red-to-green drill (the PDF's "allow `import os`"):** in `backend/policy.py`, delete the `"os": …`
   entry from `DENY_MODULES` and run `python -m evals.run_gate --hard-only`. It goes red and names **H19**
@@ -198,6 +198,25 @@ python -m evals.chaos_run --outage     # total outage
 | **Allow**: runs in the sandbox | everything else, e.g. `list.remove`, `re.compile`, `functools` | everything else |
 
 Each reason starts with its category ("Deletes or damages files: calls shutil.rmtree"), and the UI lists them.
+
+**Refused before any code exists.** `check_request_intent` checks the request itself, in code and before any
+model call. Requests like these get **"CodeSmith won't write this code"**, with the reason and *what you can ask
+instead*: deleting files or folders ("delete a folder from my desktop"), formatting disks, shutting down machines,
+installing software, running shell commands, reading system secrets (environment variables, `/etc/passwd`, SSH
+keys), asking for an infinite loop, or malware.
+
+**No infinite loops.** `find_infinite_loops` (Python) and `find_infinite_loops_js` flag loops that can never end:
+`while True`, `for (;;)` or an endless iterator with no `break`, `return` or `raise`. Generated code with one is
+sent back to the model once, with the reason. If it comes back infinite again it is discarded: never shown,
+never run. A loop that only *looks* finite (`while i >= 0: i += 1`) passes the policy and is killed by the
+sandbox timeout (gate case H12).
+
+**Idempotency at two levels.**
+* *Run key*: a hash of user + code + tests. The same code and tests never run twice; the stored result is reused.
+* *Request key*: a hash of user + masked request + switches, ignoring case and spacing. Sending the same request
+  again within `idempotency.request_window_minutes` (60) returns the earlier result. Nothing is generated or run
+  again, and no second ticket is opened. The UI says so and shows the key. Failed attempts are not reused, so
+  they can be retried. Chaos and outage runs are always fresh.
 
 ## HTTP contract
 

@@ -16,7 +16,19 @@ class NotFound(Exception):
     """Raised for a missing run and for someone else's run, with the same message."""
 
 
+def request_key(user_id: str, request: str, controls: dict | None = None) -> str:
+    """Request-level idempotency key: hash of the user, the (masked) request and the switches.
+    Case and spacing do not matter, so "Write f" and "write  f " are the same request."""
+    norm = " ".join((request or "").lower().split()).rstrip(" .!?")
+    h = hashlib.sha256()
+    for part in (user_id, norm, json.dumps(controls or {}, sort_keys=True)):
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 def idempotency_key(user_id: str, code: str, tests: str) -> str:
+    """Run-level idempotency key (R2): hash of the user, the code and the tests."""
     h = hashlib.sha256()
     for part in (user_id, code, tests):
         h.update(part.encode("utf-8"))
@@ -84,13 +96,27 @@ class RunStore:
                 created  REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS runs_owner ON runs(owner, seq);
+            CREATE INDEX IF NOT EXISTS runs_created ON runs(created);
             CREATE TABLE IF NOT EXISTS results (               -- idempotency key -> sandbox result
                 key      TEXT PRIMARY KEY,
                 result   TEXT NOT NULL
             );
         """)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(runs)")}
+        if "req_key" not in cols:                        # databases created before request keys existed
+            self._db.execute("ALTER TABLE runs ADD COLUMN req_key TEXT")
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+
+    def find_recent(self, owner: str, req_key: str, statuses: set[str], max_age_s: float) -> Run | None:
+        """The owner's newest finished run of the same request within the window, if any."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT seq, run_id, owner, request, status, result, created FROM runs "
+                "WHERE owner = ? AND req_key = ? AND created >= ? ORDER BY seq DESC LIMIT 1",
+                (owner, req_key, time.time() - max_age_s)).fetchone()
+        run = self._row(row) if row else None
+        return run if run and run.status in statuses and run.result else None
 
     @staticmethod
     def _row(row) -> Run:
@@ -99,13 +125,14 @@ class RunStore:
                    created=created, seq=seq)
 
     # runs
-    def create(self, run_id: str, owner: str, request: str, keep: int | None = None) -> Run:
+    def create(self, run_id: str, owner: str, request: str, keep: int | None = None,
+               req_key: str | None = None) -> Run:
         """Store a new run. With keep=N, only the owner's N most recent runs are kept; older ones are
         deleted for good (their request, code and answer), so history never grows past N per user."""
         with self._lock:
             now = time.time()
-            cur = self._db.execute("INSERT INTO runs (run_id, owner, request, status, created) VALUES (?,?,?,?,?)",
-                                   (run_id, owner, request, "started", now))
+            cur = self._db.execute("INSERT INTO runs (run_id, owner, request, status, created, req_key) "
+                                   "VALUES (?,?,?,?,?,?)", (run_id, owner, request, "started", now, req_key))
             if keep is not None:
                 self._db.execute("DELETE FROM runs WHERE owner = ? AND seq NOT IN "
                                  "(SELECT seq FROM runs WHERE owner = ? ORDER BY seq DESC LIMIT ?)",
