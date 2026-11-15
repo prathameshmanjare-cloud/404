@@ -16,7 +16,7 @@ needs_node = pytest.mark.skipif(NODE_BIN is None, reason="Node.js is not install
 # ---------------------------------------------------------------- PII
 @pytest.mark.parametrize("text,kind,valid", [
     ("my pan card is BNZPM2501F", "PAN", True),
-    ("pan ardps5537d", "PAN", True),
+    ("pan bnzpm2501f", "PAN", True),
     ("pan ABCDX1234Z", "PAN", False),                     # 4th letter is not a holder type
     ("gstin 27AAPFU0939F1ZV", "GSTIN", True),
     ("gstin 27AAPFU0939F1ZA", "GSTIN", False),            # wrong check character

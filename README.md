@@ -67,6 +67,13 @@ a ticket. It never auto-approves code.
 `guard/mask.py` finds each value, **checks it in code**, and replaces it with a placeholder before anything else
 runs: models, logs, tickets, recorded responses and API replies only ever contain placeholders.
 
+Each kind of value is one named `RedactionRule` in the `RULES` table: its regex (documented beside it),
+optional context words that must appear just before it (passport, account, …) and an optional check
+(Luhn, Verhoeff, GSTIN, PAN holder type). `redact(text)` applies every rule. Where two matches overlap,
+the earlier rule wins, so a GSTIN is not also masked as a PAN. It returns the masked text plus one
+finding per value. `tests/test_redact.py` has one test per rule (it fails if a rule has no example) and a
+list of numbers that must stay unmasked.
+
 | Type | Placeholder | Check done in code |
 | --- | --- | --- |
 | PAN | `[PAN]` | Format (5 letters, 4 digits, 1 letter) and holder type from the 4th letter (P individual, C company, …) |
