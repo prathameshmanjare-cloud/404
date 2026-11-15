@@ -23,8 +23,10 @@ def render_report(state: dict) -> str:
     elif status == "refused":
         lines.append(state.get("notes", ["Request refused."])[-1])
     elif status == "unavailable":
-        lines.append("Cannot generate code right now: the models are unavailable and this task has no "
+        lines.append("Cannot answer fully right now: the models are unavailable and this task has no "
                      "reviewed template. A ticket was opened so a person can follow up.")
+    elif status == "answered":
+        lines.append("Answered in text. No code was generated or run.")
     elif status == "invalid_output":
         lines.append("The model's answer was not valid Python, even after asking it again. Nothing was executed. "
                      "Please try again or rephrase the request.")
@@ -53,5 +55,9 @@ def render_report(state: dict) -> str:
             if run.get("cached"):
                 lines.append("Same code and tests as an earlier run: the stored result was reused, "
                              "the sandbox did not run again.")
+    pii = state.get("pii") or []
+    if pii:
+        kinds = ", ".join(dict.fromkeys(f["placeholder"] for f in pii))
+        lines.append(f"Sensitive data masked before any model saw it: {kinds}.")
     lines.append(f"Served by: {TIER_TEXT.get(tier, tier)}.")
     return "\n".join(lines)

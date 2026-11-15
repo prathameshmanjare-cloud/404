@@ -21,7 +21,9 @@ function blockedReason(reply: Reply): string | null {
 }
 
 export default function RunPanel({ reply, userId }: Props) {
-  const initial = reply.example || "# Call the generated function here, for example:\n# print(my_function(10))";
+  const js = reply.language === "javascript";
+  const initial = reply.example || (js ? "// Call the exported function here, for example:\n// myFunction(10)"
+                                       : "# Call the generated function here, for example:\n# print(my_function(10))");
   const [snippet, setSnippet] = useState(initial);
   const [result, setResult] = useState<ExecuteResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -52,7 +54,9 @@ export default function RunPanel({ reply, userId }: Props) {
           <button className="ghost small" onClick={() => setSnippet(initial)} disabled={running}>Reset example</button>
         </div>
         <p className="muted small">
-          Write Python that calls the generated code. The value of the last line is printed, as in a Python shell.
+          {js
+            ? "Write JavaScript that calls the exported functions. The value of the last line is printed, as in the Node.js console."
+            : "Write Python that calls the generated code. The value of the last line is printed, as in a Python shell."}{" "}
           It runs in the sandbox: no network, no secrets, a time limit, and file or OS access is refused.
         </p>
         <textarea

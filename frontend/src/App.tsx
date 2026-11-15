@@ -17,6 +17,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +50,7 @@ export default function App() {
 
   async function send(text: string) {
     setBusy(true);
+    setPending(text);
     setError(null);
     try {
       upsert(await api.submit(userId, text, controls));
@@ -56,6 +58,7 @@ export default function App() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setPending(null);
     }
   }
 
@@ -112,20 +115,33 @@ export default function App() {
             <HistoryList history={history} selected={selected} onSelect={setSelected} />
           </aside>
           <main className="main">
-            {current ? (
+            {pending ? (
+              <section className="card pending" aria-live="polite">
+                <div className="spinner" aria-hidden />
+                <div>
+                  <div className="eyebrow">Working on</div>
+                  <p className="pending-text">{pending}</p>
+                  <p className="muted small">
+                    Masking personal data, understanding the request, then writing and testing code in the sandbox
+                    (or writing an answer). Code requests usually take 10–30 seconds.
+                  </p>
+                </div>
+              </section>
+            ) : current ? (
               <RequestView key={current.reply.thread_id} entry={current} userId={userId} role={role} busy={busy}
                            onDecide={decide} />
             ) : (
               <div className="center-state">
-                <h2>Ask for a Python function or a SQL query</h2>
+                <h2>Ask a question, or ask for Python, JavaScript or SQL</h2>
                 <p className="muted">
-                  The assistant writes the code and its tests, checks them against the safety policy, runs the tests
-                  in a sandbox, and lets you run the code with your own input.
+                  For code, the assistant writes the code and its tests, checks them against the safety policy, runs
+                  the tests in a sandbox, and lets you run the code with your own input. Personal data such as PAN,
+                  Aadhaar or card numbers is masked before any model sees it, and checked in code.
                 </p>
                 <ol className="how">
-                  <li><strong>Describe</strong> what you need in “New request”.</li>
-                  <li><strong>Review</strong> the code, tests and safety decision in the tabs.</li>
-                  <li><strong>Run</strong> it with your own values in the Run tab.</li>
+                  <li><strong>Ask</strong> a question or describe the code you need in “New request”.</li>
+                  <li><strong>Review</strong> the answer, or the code, tests and safety decision in the tabs.</li>
+                  <li><strong>Run</strong> code with your own values in the Run tab.</li>
                 </ol>
               </div>
             )}

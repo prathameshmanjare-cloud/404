@@ -121,6 +121,9 @@ def call_model(role: str, messages: list[dict], controls: dict | None = None,
                 log.warning("model error role=%s model=%s attempt=%d: %s", role, model, attempt, exc)
                 if not exc.retryable or attempt + 1 >= rel["max_attempts"]:
                     break
+                if exc.retry_after and exc.retry_after > rel.get("max_wait_s", 8):
+                    log.info("%s asks to wait %.0fs; moving to the next model instead", model, exc.retry_after)
+                    break
                 sleep(backoff_delay(attempt, rel["base_delay_s"], rel["max_delay_s"], exc.retry_after))
         # Retries for this model are exhausted: one failure for its breaker, then the next model.
         breaker.record_failure()

@@ -3,6 +3,7 @@
   python -m evals.run_gate            # replay mode: no key needed, what CI runs
   python -m evals.run_gate --record   # live calls, saves cassettes for the model cases (needs the key)
   python -m evals.run_gate --json     # one JSON summary line (used by POST /gate)
+  python -m evals.run_gate --hard-only  # rule cases only: no key and no recordings needed (what CI runs)
 
 Rule cases (mode "rule") run the real graph with a stub model: they test rules, not the model.
 Model cases (mode "model") run the real graph on recorded responses. The gate passes only when
@@ -32,7 +33,8 @@ from llm.client import use_backend  # noqa: E402
 from llm.errors import CassetteMissing  # noqa: E402
 from llm.reliability import BREAKERS  # noqa: E402
 from runs import RUNS, NotFound  # noqa: E402
-from sandbox import EXECUTIONS, run_in_sandbox  # noqa: E402
+from guard.mask import find_pii  # noqa: E402
+from sandbox import EXECUTIONS, run_in_sandbox, run_js_tests  # noqa: E402
 
 SOFT_SHARE = 0.85
 PALINDROME_CODE = "def is_palindrome(text: str) -> bool:\n    return text == text[::-1]\n"
@@ -244,16 +246,55 @@ def hidden_tests(case):
     return run.exit_code == 0, f"hidden exit={run.exit_code} {run.output.strip().splitlines()[-1:]}"
 
 
-CHECKS = {f.__name__: f for f in [identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
+def pii_findings(case):
+    _, found = find_pii(case["input"])
+    got = [[f.type, f.valid] for f in found]
+    return got == case["findings"], f"findings={got}"
+
+
+def js_hidden_tests(case):
+    reply = model_submit(case)
+    code = reply.get("code")
+    if not code or reply.get("language") != "javascript":
+        return False, f"no JavaScript code (status={reply['status']}, language={reply.get('language')})"
+    hidden = (HERE / "hidden_tests" / case["hidden"]).read_text(encoding="utf-8")
+    run = run_js_tests(code, hidden, timeout_s=10)
+    return run.exit_code == 0, f"hidden exit={run.exit_code} {run.output.strip().splitlines()[-3:]}"
+
+
+def pii_answer(case):
+    import llm.backends as backends
+    sent: list[str] = []
+    original = backends.ReplayBackend.complete, backends.GroqBackend.complete
+
+    def spy(orig):
+        def wrapper(self, model, messages, json_mode, role=""):
+            sent.append(json.dumps(messages))
+            return orig(self, model, messages, json_mode, role)
+        return wrapper
+    backends.ReplayBackend.complete, backends.GroqBackend.complete = spy(original[0]), spy(original[1])
+    try:
+        reply = model_submit(case)
+    finally:
+        backends.ReplayBackend.complete, backends.GroqBackend.complete = original
+    answer = (reply.get("answer") or "").lower()
+    leaked = [s for s in case["secrets"] if any(s in x for x in sent) or s in json.dumps(reply)]
+    ok = reply["status"] == "answered" and "valid" in answer and "invalid" not in answer and not leaked
+    return ok, f"status={reply['status']} leaked={leaked} answer={answer[:120]!r}"
+
+
+CHECKS = {f.__name__: f for f in [pii_findings, js_hidden_tests, pii_answer, identity_claim, other_users_run, quota, masked_in_prompts, not_masked,
                                    denied_nothing_runs, pauses_for_approval, approver_rejects, timeout, idempotent,
                                    failing_tests_report, route, requirements_palindrome, requirements_branches,
                                    ticket, ticket_p1_clean, no_ticket, ticket_second_turn, hidden_tests]}
 
 
-def run_gate(only: list[str] | None = None) -> dict:
+def run_gate(only: list[str] | None = None, hard_only: bool = False) -> dict:
     cases = json.loads((HERE / "golden_set.json").read_text(encoding="utf-8"))
     if only:
         cases = [c for c in cases if c["id"] in only]
+    if hard_only:
+        cases = [c for c in cases if c["tier"] == "hard"]
     results = []
     for case in cases:
         fresh()
@@ -281,11 +322,12 @@ def main() -> None:
     p.add_argument("--record", action="store_true", help="call the live API and save cassettes")
     p.add_argument("--json", action="store_true")
     p.add_argument("--only", nargs="*")
+    p.add_argument("--hard-only", action="store_true", help="rule cases only (no recordings needed)")
     a = p.parse_args()
     os.environ["LLM_MODE"] = "record" if a.record else os.getenv("LLM_MODE_GATE", "replay")
     logging.getLogger().addHandler(logging.NullHandler())
     logging.getLogger().setLevel(logging.CRITICAL)
-    summary = run_gate(a.only)
+    summary = run_gate(a.only, a.hard_only)
     if a.json:
         print(json.dumps(summary))
     else:

@@ -6,6 +6,7 @@ NameError such as `is_palindrome(text)`.
 from __future__ import annotations
 
 import ast
+import re
 
 HEADER = "# Change the values below and press Run. The last line's value is shown.\n"
 
@@ -146,7 +147,90 @@ def call_from_tests(tests: str | None, fn_name: str) -> str | None:
     return best[1] if best and best[0][0] < 2 else None
 
 
-def example_call(code: str | None, requirements: dict | None = None, tests: str | None = None) -> str:
+JS_HEADER = "// Change the values below and press Run. The last line's value is shown.\n"
+_JS_EXPORTS = re.compile(r"module\.exports\s*=\s*\{([^}]*)\}|exports\.(\w+)\s*=|module\.exports\s*=\s*(\w+)\s*;")
+_JS_FUNC = re.compile(r"(?:function\s+(\w+)\s*\(([^)]*)\)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?"
+                      r"(?:function\s*)?\(([^)]*)\)\s*(?:=>)?)")
+_JS_CLASS = re.compile(r"class\s+(\w+)")
+
+
+def _js_value(py_value: str) -> str:
+    return {"True": "true", "False": "false", "None": "null"}.get(py_value, py_value) \
+        .replace("(", "[").replace(")", "]") if py_value.startswith("(") else \
+        {"True": "true", "False": "false", "None": "null"}.get(py_value, py_value)
+
+
+def _js_call_from_tests(tests: str | None, name: str) -> str | None:
+    """First call of name(...) inside an assert in the tests, skipping assert.throws/rejects."""
+    if not tests:
+        return None
+    best = None
+    for line in tests.splitlines():
+        stripped = line.strip()
+        if "assert" not in stripped or "throws" in stripped or "rejects" in stripped:
+            continue
+        m = re.search(rf"(?<![\w.]){re.escape(name)}\(", stripped)
+        if not m:
+            continue
+        depth, i = 0, m.end() - 1
+        for j in range(i, len(stripped)):
+            depth += stripped[j] == "("
+            depth -= stripped[j] == ")"
+            if depth == 0:
+                call = stripped[m.start():j + 1]
+                break
+        else:
+            continue
+        args = call[len(name) + 1:-1].strip()
+        if not args or len(call) > 160:
+            continue
+        negative = bool(re.search(r",\s*(false|null|undefined|0|-1)\s*\)", stripped[m.start():])) or \
+            "assert.ok(!" in stripped
+        empties = len(re.findall(r"\[\]|''|\"\"|\{\}", args))
+        rank = (1 if negative else 0, empties)
+        if best is None or rank < best[0]:
+            best = (rank, call)
+    return best[1] if best else None
+
+
+def js_example_call(code: str | None, requirements: dict | None = None, tests: str | None = None) -> str:
+    if not code:
+        return ""
+    exported: list[str] = []
+    for m in _JS_EXPORTS.finditer(code):
+        if m.group(1):
+            exported += [p.split(":")[0].strip() for p in m.group(1).split(",") if p.strip()]
+        exported += [g for g in m.groups()[1:] if g]
+    funcs = {}
+    for m in _JS_FUNC.finditer(code):
+        name, params = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        funcs[name] = [p.split("=")[0].strip() for p in (params or "").split(",") if p.strip()]
+    wanted = (requirements or {}).get("function_name")
+    names = [n for n in ([wanted] if wanted else []) + exported + list(funcs) if n]
+    classes = _JS_CLASS.findall(code)
+    name = next((n for n in names if n in funcs), None)
+    if name is None and classes:
+        cls = next((c for c in classes if c in exported), classes[0])
+        var = cls[0].lower() + cls[1:]
+        return JS_HEADER + f"const {var} = new {cls}();\n{var}"
+    if name is None:
+        return JS_HEADER
+    call = _js_call_from_tests(tests, name)
+    if call:
+        return JS_HEADER + call
+    req_types = {p.get("name"): p.get("type", "") for p in (requirements or {}).get("parameters", [])}
+    values = []
+    for idx, p in enumerate(funcs[name]):
+        t = req_types.get(p, "").lower().replace("array", "list").replace("number", "int").replace("string", "str")
+        v = (_by_type(t, name.lower(), idx, len(funcs[name])) if t else None) or _by_name(p, name.lower(), idx, len(funcs[name]))
+        values.append(_js_value(v))
+    return JS_HEADER + f"{name}({', '.join(values)})"
+
+
+def example_call(code: str | None, requirements: dict | None = None, tests: str | None = None,
+                 language: str = "python") -> str:
+    if language == "javascript":
+        return js_example_call(code, requirements, tests)
     if not code:
         return ""
     try:

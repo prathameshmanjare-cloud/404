@@ -2,8 +2,9 @@ import { useState } from "react";
 
 const EXAMPLES = [
   "Write a function to check if a number is a palindrome",
-  "Write a function that returns the n-th Fibonacci number",
-  "Write a function that checks whether two words are anagrams",
+  "Write a JavaScript function that removes duplicates from an array",
+  "My PAN is ABCPE1234F. Is it correct?",
+  "Explain the difference between a list and a tuple",
   "Query total sales per region",
 ];
 
@@ -28,7 +29,7 @@ export default function Composer({ busy, onSend }: Props) {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Describe the function or query you need…"
+        placeholder="Ask a question, or describe the Python or JavaScript code you need…"
         rows={4}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {

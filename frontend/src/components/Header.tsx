@@ -31,7 +31,7 @@ export default function Header({ page, onPage, users, userId, onUser, health, co
         <span className="logo" aria-hidden>{"</>"}</span>
         <div>
           <div className="brand-name">CodeForge</div>
-          <div className="brand-sub">Code assistant with safety checks</div>
+          <div className="brand-sub">Python &amp; JavaScript assistant with privacy and safety checks</div>
         </div>
       </div>
       <nav className="nav" aria-label="Pages">

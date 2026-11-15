@@ -10,11 +10,12 @@ from config import get_config
 from examples import example_call
 from graph import GRAPH
 from guard.identity import UnknownUser, can_approve, get_identity
-from guard.mask import MaskingFilter, mask, mask_obj
+from guard.mask import MaskingFilter, find_pii, mask, mask_obj
 from guard.quota import check_quota
 from policy import evaluate_code_policy
+from policy_js import evaluate_js_policy
 from runs import RUNS, NotFound
-from sandbox import run_snippet
+from sandbox import run_js_snippet, run_snippet
 from state import Controls, PolicyResult
 
 log = logging.getLogger("codeforge.service")
@@ -45,6 +46,9 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
         "status": status,
         "request": state.get("request"),
         "route": state.get("route"),
+        "language": state.get("language") if state.get("code") else None,
+        "answer": state.get("answer"),
+        "pii": state.get("pii") or [],
         "code": state.get("code"),
         "tests": state.get("tests"),
         "sql": state.get("sql"),
@@ -56,11 +60,12 @@ def _reply(thread_id: str, state: dict, interrupted: bool) -> dict:
         "ticket": state.get("ticket"),
         "triage": state.get("triage"),
         "requirements": state.get("requirements"),
-        "example": example_call(state.get("code"), state.get("requirements"), state.get("tests")),
+        "example": example_call(state.get("code"), state.get("requirements"), state.get("tests"),
+                                state.get("language", "python")),
         "run": {k: run.get(k) for k in ("exit_code", "timed_out", "output", "sandbox", "cached")} if run else None,
     }
     # Final pass: nothing unmasked leaves the backend, even text a model echoed back.
-    for key in ("report", "ticket", "triage"):
+    for key in ("report", "ticket", "triage", "answer"):
         out[key] = mask_obj(out[key])
     RUNS.update(thread_id, status, {k: out[k] for k in ("status", "report", "tier")})
     return out
@@ -79,7 +84,11 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
         identity = get_identity(cfg, user_id)
     except UnknownUser as exc:
         raise ServiceError(str(exc), 403) from exc
-    request = mask(text or "").strip()  # first thing: nothing below ever sees the raw text
+    # First thing: find, check and mask PII. Nothing below ever sees the raw text; the findings keep
+    # only the type and the result of the checks, never the value.
+    request, findings = find_pii(text or "")
+    request = request.strip()
+    pii = [f.to_dict() for f in findings]
     if not request:
         raise ServiceError("empty request")
     ctl = Controls.model_validate(controls or {}).model_dump()
@@ -89,10 +98,12 @@ def submit(user_id: str, text: str, controls: dict | None = None) -> dict:
     if not check_quota(cfg, identity):
         RUNS.create(thread_id, identity.user_id, request)
         return _reply(thread_id, {"status": "refused", "tier": "none", "request": request,
+                                  "pii": pii,
                                   "report": "Run quota reached for this user. No model was called."}, False)
     RUNS.create(thread_id, identity.user_id, request)
     state = {"thread_id": thread_id, "user_id": identity.user_id, "role": identity.role, "request": request,
-             "controls": ctl, "attempts": 0, "tier": "none", "notes": [], "status": "started"}
+             "controls": ctl, "attempts": 0, "tier": "none", "notes": [], "status": "started", "pii": pii,
+             "language": "python"}
     return _run_graph(state, thread_id)
 
 
@@ -146,7 +157,9 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
     if decision == "needs_approval" and values.get("approval") != "approved":
         raise ServiceError("this code needs an approver before it can run", 403)
 
-    snippet_policy = evaluate_code_policy(snippet) if snippet.strip() else PolicyResult(
+    language = values.get("language", "python")
+    evaluate = evaluate_js_policy if language == "javascript" else evaluate_code_policy
+    snippet_policy = evaluate(snippet) if snippet.strip() else PolicyResult(
         decision="allow", reasons=["no snippet: the code runs as a script"])
     if snippet_policy.decision != "allow":
         raise ServiceError("the snippet was refused by the policy gate: " + "; ".join(snippet_policy.reasons), 403)
@@ -155,6 +168,7 @@ def execute(thread_id: str, user_id: str, snippet: str) -> dict:
 
     sb = cfg["sandbox"]
     log.info("execute thread=%s user=%s snippet=%s", thread_id, user_id, snippet[:200])
-    result = run_snippet(code, snippet, sb["timeout_s"], sb["max_output_chars"])
+    runner = run_js_snippet if language == "javascript" else run_snippet
+    result = runner(code, snippet, sb["timeout_s"], sb["max_output_chars"])
     return {"thread_id": thread_id, "exit_code": result.exit_code, "timed_out": result.timed_out,
             "output": mask(result.output), "sandbox": result.sandbox, "policy": snippet_policy.model_dump()}

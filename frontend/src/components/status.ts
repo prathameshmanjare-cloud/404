@@ -21,6 +21,7 @@ export const STATUS: Record<Status, { label: string; tone: string; help: string 
     tone: "warn",
     help: "The model's answer was not valid Python, even after asking it again. Nothing was executed.",
   },
+  answered: { label: "Answered", tone: "ok", help: "Answered in text. No code was generated or run." },
   sql: { label: "SQL ready", tone: "ok", help: "A read-only query was written and checked. It was not executed." },
 };
 
@@ -45,8 +46,31 @@ export interface Step {
   note: string;
 }
 
+export const PII_LABEL: Record<string, string> = {
+  PAN: "PAN", AADHAAR: "Aadhaar number", CARD: "Card number", PHONE: "Phone number", EMAIL: "Email address",
+  UPI: "UPI ID", GSTIN: "GSTIN", SECRET: "API key or token", ACCOUNT: "Bank account number",
+  PASSPORT: "Passport number", VOTER_ID: "Voter ID", DL: "Driving licence number",
+};
+
+export const LANGUAGE = {
+  python: { label: "Python", file: "solution.py", tests: "test_solution.py", runner: "pytest" },
+  javascript: { label: "JavaScript", file: "solution.js", tests: "solution.test.js", runner: "node --test" },
+} as const;
+
 export function steps(r: Reply): Step[] {
   const decision = r.policy?.decision;
+  const privacy: Step = r.pii?.length
+    ? { label: "Privacy", state: "done", note: `${r.pii.length} item${r.pii.length > 1 ? "s" : ""} masked` }
+    : { label: "Privacy", state: "done", note: "Nothing sensitive" };
+  if (r.status === "answered" || (r.route === "general" && !r.code)) {
+    return [
+      { label: "Understand", state: "done", note: "Question" },
+      privacy,
+      r.answer
+        ? { label: "Answer", state: r.status === "answered" ? "done" : "warn", note: r.status === "answered" ? "Ready" : "Offline checks only" }
+        : { label: "Answer", state: "failed", note: "Unavailable" },
+    ];
+  }
   const isSql = !!r.sql || r.status === "sql";
   if (r.status === "escalated") {
     return [
@@ -55,7 +79,7 @@ export function steps(r: Reply): Step[] {
     ];
   }
   if (r.status === "refused") {
-    return [{ label: "Understand", state: "failed", note: r.route === "other" ? "Not a coding task" : "Refused" }];
+    return [{ label: "Understand", state: "failed", note: "Request refused" }];
   }
   if (isSql) {
     return [
@@ -68,7 +92,9 @@ export function steps(r: Reply): Step[] {
       },
     ];
   }
-  const out: Step[] = [{ label: "Understand", state: "done", note: "Python function" }];
+  const lang = r.language === "javascript" ? "JavaScript" : "Python";
+  const out: Step[] = [{ label: "Understand", state: "done", note: `${lang} function` }];
+  if (r.pii?.length) out.push(privacy);
   out.push(r.code ? { label: "Generate", state: "done", note: "Code and tests" } : { label: "Generate", state: "failed", note: "Not available" });
   if (!r.code) return out;
   out.push(

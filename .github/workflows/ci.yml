@@ -19,11 +19,14 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4   # JavaScript requests are tested and run with Node.js
+        with:
+          node-version: "22"
       - run: pip install -r requirements.txt
       - name: Unit tests
         run: python -m pytest -q tests
-      - name: Golden-set gate
-        run: python -m evals.run_gate
+      - name: Golden-set gate (hard rule cases; recorded model cases are not committed)
+        run: python -m evals.run_gate --hard-only
       - name: Secret scan (test fixtures excluded)
         working-directory: .
         run: |

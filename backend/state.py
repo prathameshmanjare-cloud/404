@@ -5,7 +5,8 @@ from typing import Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
-Route = Literal["python_function", "sql", "other"]
+Route = Literal["python_function", "javascript_function", "sql", "general", "other"]
+Language = Literal["python", "javascript"]
 Tier = Literal["primary", "fallback", "template", "none"]
 Decision = Literal["allow", "needs_approval", "deny"]
 
@@ -68,6 +69,9 @@ class CodeForgeState(TypedDict, total=False):
     request: str                       # already masked
     controls: dict
     route: Route | None
+    language: Language                 # of the generated code
+    pii: list[dict]                    # findings from guard.mask.find_pii (types and checks, never values)
+    answer: str | None                 # text answer for general requests
     triage: dict | None                # Triage
     requirements: dict | None          # Requirements
     code: str | None

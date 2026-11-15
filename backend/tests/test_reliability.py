@@ -95,7 +95,7 @@ def test_outage_serves_template_for_known_task_and_ticket_for_unknown():
     assert known["code"] == TEMPLATES["palindrome"]["code"]
     assert "template tier" in known["report"]
     assert unknown["status"] == "unavailable" and unknown["ticket"] and not unknown["code"]
-    assert "Cannot generate code right now" in unknown["report"]
+    assert "Cannot answer fully right now" in unknown["report"]
 
 
 def test_template_tier_never_auto_approves_risky_code(monkeypatch):
@@ -117,3 +117,19 @@ def test_sandbox_basics(monkeypatch):
     assert net.exit_code == 0
     hang = run_in_sandbox("", "def test_hang():\n    while True:\n        pass\n", timeout_s=1)
     assert hang.timed_out and hang.exit_code is None
+
+
+def test_long_retry_after_moves_to_fallback_without_waiting():
+    sleeps = []
+
+    class SlowLimit(Flaky):
+        def complete(self, model, messages, json_mode, role=""):
+            self.seen.append(model)
+            if model == ROUTER_PRIMARY:
+                raise ModelError("rate limited", status=429, retry_after=45)
+            return '{"route": "sql"}', {}
+
+    backend = SlowLimit(set())
+    with use_backend(backend):
+        reply = call_model("router", [{"role": "user", "content": "x"}], sleep=sleeps.append)
+    assert reply.tier == "fallback" and backend.seen.count(ROUTER_PRIMARY) == 1 and sleeps == []

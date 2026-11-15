@@ -10,6 +10,7 @@ Any model outage in the code path drops to the template tier, which fails closed
 from __future__ import annotations
 
 import logging
+import re
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -20,9 +21,10 @@ from config import get_config
 from escalation import should_escalate
 from llm.errors import InvalidOutput, ModelUnavailable
 from policy import evaluate_code_policy
+from policy_js import evaluate_js_policy
 from report import render_report
 from runs import RUNS, idempotency_key
-from sandbox import run_in_sandbox
+from sandbox import run_in_sandbox, run_js_tests
 from sql_guard import check_sql
 from state import CodeForgeState, PolicyResult, Requirements, Triage
 from templates.tasks import TEMPLATES, match_template
@@ -30,6 +32,7 @@ from tickets import build_ticket
 from triage import triage_request
 
 log = logging.getLogger("codeforge.graph")
+CHECK_WORDS = re.compile(r"\b(valid|invalid|correct|wrong|right|check|verify|genuine|real|fake|format)\b", re.I)
 TIER_RANK = {"primary": 0, "fallback": 1, "template": 2, "none": 3}
 
 
@@ -62,19 +65,23 @@ def triage_node(state: CodeForgeState) -> dict:
 def route_node(state: CodeForgeState) -> dict:
     try:
         route, tier = agents.route_request(state["request"], state.get("controls", {}))
-        return {"route": route, "tier": tier}
+        if route == "other" and state.get("pii") and CHECK_WORDS.search(state["request"]):
+            route = "general"  # rule in code: "is my <ID> valid?" is a question about the user's own data
+        return {"route": route, "tier": tier,
+                "language": "javascript" if route == "javascript_function" else "python"}
     except ModelUnavailable as exc:
         log.warning("router unavailable: %s", exc)
         # Fail closed: only a known template task continues without a model.
         return {"route": "python_function" if match_template(state["request"]) else "unavailable",
-                "tier": "template"}
+                "tier": "template", "language": "python"}
 
 
 def requirements_node(state: CodeForgeState) -> dict:
     if state.get("tier") == "template":
         return {}
     try:
-        req, tier = agents.write_requirements(state["request"], state.get("controls", {}))
+        req, tier = agents.write_requirements(state["request"], state.get("controls", {}),
+                                              state.get("language", "python"))
         return {"requirements": req.model_dump(), "tier": worse(state.get("tier", "primary"), tier)}
     except ModelUnavailable as exc:
         log.warning("requirements unavailable: %s", exc)
@@ -86,15 +93,17 @@ def code_node(state: CodeForgeState) -> dict:
         try:
             controls = state.get("controls", {})
             req = Requirements.model_validate(state["requirements"])
-            code, t1 = agents.write_code(state["request"], req, controls)
-            tests, t2 = agents.write_tests(req, controls)
+            lang = state.get("language", "python")
+            code, t1 = agents.write_code(state["request"], req, controls, lang)
+            tests, t2 = agents.write_tests(req, controls, lang)
             return {"code": code, "tests": tests, "tier": worse(worse(state.get("tier", "primary"), t1), t2)}
         except InvalidOutput as exc:
             log.warning("model output unusable: %s", exc)
             return {"status": "invalid_output", "notes": state.get("notes", []) + [str(exc)]}
         except ModelUnavailable as exc:
             log.warning("code or test model unavailable: %s", exc)
-    name = match_template(state["request"])
+    # Templates are reviewed Python; a JavaScript request never gets Python code silently.
+    name = match_template(state["request"]) if state.get("language", "python") == "python" else None
     if name is None:
         return {"tier": "none", "status": "unavailable",
                 "ticket": _ticket(state, "models unavailable and no template for this task")}
@@ -104,8 +113,9 @@ def code_node(state: CodeForgeState) -> dict:
 
 
 def policy_node(state: CodeForgeState) -> dict:
-    code_p = evaluate_code_policy(state["code"])
-    tests_p = evaluate_code_policy(state["tests"])
+    evaluate = evaluate_js_policy if state.get("language") == "javascript" else evaluate_code_policy
+    code_p = evaluate(state["code"])
+    tests_p = evaluate(state["tests"])
     order = {"deny": 0, "needs_approval": 1, "allow": 2}
     decision = min(code_p.decision, tests_p.decision, key=order.get)
     reasons = list(code_p.reasons) if code_p.decision == decision or decision == "allow" else []
@@ -144,7 +154,8 @@ def run_node(state: CodeForgeState) -> dict:
     if cached is not None:
         run = dict(cached, cached=True)
     else:
-        run = run_in_sandbox(state["code"], state["tests"], cfg["timeout_s"], cfg["max_output_chars"]).model_dump()
+        runner = run_js_tests if state.get("language") == "javascript" else run_in_sandbox
+        run = runner(state["code"], state["tests"], cfg["timeout_s"], cfg["max_output_chars"]).model_dump()
         RUNS.store_result(key, run)
     return {"idem_key": key, "run": run, "status": "done"}
 
@@ -155,7 +166,7 @@ def repair_node(state: CodeForgeState) -> dict:
     req = Requirements.model_validate(state["requirements"])
     try:
         code, tier = agents.repair_code(req, state["code"], state["tests"], state["run"].get("output", ""),
-                                        state.get("controls", {}))
+                                        state.get("controls", {}), state.get("language", "python"))
     except ModelUnavailable:
         # Code unchanged: the rerun reuses the stored result through the idempotency key.
         return {"attempts": state.get("attempts", 0) + 1}
@@ -173,12 +184,32 @@ def sql_node(state: CodeForgeState) -> dict:
 
 def refuse_node(state: CodeForgeState) -> dict:
     return {"status": "refused", "notes": state.get("notes", []) + [
-        "I can only write Python functions (with tests) and read-only SQL queries. "
-        "Access and roles come from your account, not from the message."]}
+        "I can't help with that request. Access and roles come from your account, not from the message, "
+        "and I don't change them or show other users' data."]}
+
+
+def general_node(state: CodeForgeState) -> dict:
+    """Non-coding requests: a text answer. The model sees masked text and code-verified PII facts only."""
+    try:
+        answer, tier = agents.answer_general(state["request"], state.get("pii") or [], state.get("controls", {}))
+    except ModelUnavailable as exc:
+        log.warning("general answer unavailable: %s", exc)
+        return {"status": "unavailable", "tier": "none", "answer": _offline_answer(state)}
+    return {"status": "answered", "answer": answer, "tier": tier}
+
+
+def _offline_answer(state: CodeForgeState) -> str | None:
+    """With no model, the code-verified checks can still answer "is my <ID> valid?"."""
+    found = state.get("pii") or []
+    if not found:
+        return None
+    lines = ["The assistant is offline, but the built-in checks ran on what you sent:"]
+    lines += [f"- {agents.PII_LABEL.get(f['type'], f['type'])}: {f['detail']}." for f in found]
+    return "\n".join(lines)
 
 
 def unavailable_node(state: CodeForgeState) -> dict:
-    return {"status": "unavailable", "tier": "none",
+    return {"status": "unavailable", "tier": "none", "answer": _offline_answer(state),
             "ticket": _ticket(state, "models unavailable and no template for this task")}
 
 
@@ -210,7 +241,8 @@ def after_triage(state: CodeForgeState) -> str:
 
 
 def after_route(state: CodeForgeState) -> str:
-    return {"python_function": "requirements", "sql": "sql", "other": "refuse"}.get(state.get("route"), "unavailable")
+    return {"python_function": "requirements", "javascript_function": "requirements", "sql": "sql",
+            "general": "general", "other": "refuse"}.get(state.get("route"), "unavailable")
 
 
 def after_code(state: CodeForgeState) -> str:
@@ -242,11 +274,12 @@ def build_graph():
                      ("code", code_node), ("policy", policy_node), ("approval", approval_node),
                      ("run", run_node), ("repair", repair_node), ("post_run", escalation_after_run),
                      ("sql", sql_node), ("refuse", refuse_node), ("unavailable", unavailable_node),
+                     ("general", general_node),
                      ("report", report_node)]:
         g.add_node(name, fn)
     g.add_edge(START, "triage")
     g.add_conditional_edges("triage", after_triage, ["report", "route"])
-    g.add_conditional_edges("route", after_route, ["requirements", "sql", "refuse", "unavailable"])
+    g.add_conditional_edges("route", after_route, ["requirements", "sql", "refuse", "unavailable", "general"])
     g.add_edge("requirements", "code")
     g.add_conditional_edges("code", after_code, ["report", "policy"])
     g.add_conditional_edges("policy", after_policy, ["report", "approval", "run"])
@@ -254,7 +287,7 @@ def build_graph():
     g.add_conditional_edges("run", after_run, ["repair", "post_run"])
     g.add_edge("repair", "policy")
     g.add_edge("post_run", "report")
-    for n in ("sql", "refuse", "unavailable"):
+    for n in ("sql", "refuse", "unavailable", "general"):
         g.add_edge(n, "report")
     g.add_edge("report", END)
     return g.compile(checkpointer=MemorySaver())

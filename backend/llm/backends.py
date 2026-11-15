@@ -43,8 +43,10 @@ class GroqBackend:
             raise ModelError(f"{model} returned {resp.status_code}", status=resp.status_code,
                              retry_after=retry_after)
         if resp.status_code >= 400:
+            # json_validate_failed: the model produced invalid JSON once; a retry usually works.
+            flaky = "json_validate_failed" in resp.text
             raise ModelError(f"{model} returned {resp.status_code}: {resp.text[:200]}",
-                             status=resp.status_code, retryable=False)
+                             status=resp.status_code, retryable=flaky)
         data = resp.json()
         text = data["choices"][0]["message"]["content"] or ""
         return text, data.get("usage", {})

@@ -9,6 +9,7 @@ export type Status =
   | "refused"
   | "unavailable"
   | "invalid_output"
+  | "answered"
   | "sql";
 
 export type Tier = "primary" | "fallback" | "template" | "none";
@@ -28,6 +29,14 @@ export interface Controls {
 export interface Policy {
   decision: "allow" | "needs_approval" | "deny";
   reasons: string[];
+}
+
+// A sensitive value found in the request: its type and the result of the code checks. Never the value.
+export interface PiiFinding {
+  type: string;
+  placeholder: string;
+  valid: boolean | null;
+  detail: string;
 }
 
 export interface Ticket {
@@ -53,6 +62,9 @@ export interface Reply {
   status: Status;
   request: string | null; // masked by the backend
   route: string | null;
+  language: "python" | "javascript" | null;
+  answer: string | null;
+  pii: PiiFinding[];
   code: string | null;
   tests: string | null;
   sql: string | null;
